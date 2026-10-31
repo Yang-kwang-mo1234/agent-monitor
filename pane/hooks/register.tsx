@@ -12,6 +12,7 @@ import type {
   Route,
   Run,
   RunStatus,
+  SelfUpdate,
   Span,
   Step,
   Today,
@@ -133,6 +134,31 @@ const selected = atom(
   null as string | null,
   { shape: 'selected-1' },
 )
+
+// The Update button's last run, kept so the result stays after a redraw.
+const selfUpdate = atom(
+  { plugin: 'agent-monitor-pane', key: 'selfUpdate' } as const,
+  { status: 'idle' } as SelfUpdate,
+  { shape: 'selfUpdate-1' },
+)
+// A login shell, so `claude` is found where the person's own PATH puts it.
+const UPDATE_SH =
+  'claude plugin marketplace update agent-monitor && claude plugin update agent-monitor-pane@agent-monitor'
+
+async function updatePane($: EngineInterface) {
+  if ((await read($, selfUpdate)).status === 'running') return
+  await update($, selfUpdate, (): SelfUpdate => ({ status: 'running' }))
+  const res = await $.process
+    .run(['/bin/zsh', '-lc', UPDATE_SH], { timeoutMs: 180_000 })
+    .catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: String(err) }))
+  const lastLine = (text: string) =>
+    text.split('\n').map(l => l.trim()).filter(Boolean).at(-1) ?? ''
+  await update($, selfUpdate, (): SelfUpdate =>
+    res.exitCode === 0
+      ? { status: 'done', message: lastLine(res.stdout) }
+      : { status: 'failed', message: lastLine(res.stderr) || lastLine(res.stdout) },
+  )
+}
 
 const branch = atom(
   { plugin: 'agent-monitor-pane', key: 'branch' } as const,
@@ -1511,6 +1537,23 @@ export const register: Register = (on, options) => {
     const workedMs = total([...day.all, ...live])
     const mineMs = total([...day.mine, ...live])
     const others = day.sessions - (day.mine.length > 0 ? 1 : 0)
+    const su = await read($, selfUpdate)
+    const updateView = (
+      <Box flexDirection="column">
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text weight="medium">Pane update</Text>
+          <Button key="self-update" onPress={() => void updatePane($)}>
+            {su.status === 'running' ? 'Updating…' : 'Update'}
+          </Button>
+        </Box>
+        {su.status === 'done' && (
+          <Text color="success">{`${su.message ? `${su.message} · ` : ''}Open a new session to apply.`}</Text>
+        )}
+        {su.status === 'failed' && (
+          <Text color="error">{`Update failed${su.message ? `: ${su.message}` : ''}`}</Text>
+        )}
+      </Box>
+    )
     const todayView = (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
@@ -1579,6 +1622,7 @@ export const register: Register = (on, options) => {
           {cacheView}
           {usage}
           {todayView}
+          {updateView}
         </>,
       )
     }
@@ -1665,6 +1709,7 @@ export const register: Register = (on, options) => {
         {cacheView}
         {usage}
         {todayView}
+        {updateView}
       </>,
     )
   })

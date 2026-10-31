@@ -541,3 +541,34 @@ test('another session running now counts live, and up to its last heartbeat once
   await clock.advance(5 * 60_000) // no heartbeat for 5 minutes: that session stopped at noon
   expect(await total()).toBe('20m')
 })
+
+test('Update pulls the latest pane and says a new session applies it', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  const ran: string[][] = []
+  on('process.run', (_: unknown, e: any) => {
+    ran.push(e.argv)
+    const isUpdate = e.argv[0] === '/bin/zsh'
+    return {
+      value: {
+        exitCode: isUpdate ? 0 : 1,
+        stdout: isUpdate ? '✔ Plugin "agent-monitor-pane" updated from 0.2.0 to 0.2.1\n' : '',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ plugin: 'agent-monitor-pane', key: 'self-update' })
+
+  const update = ran.find(a => a[0] === '/bin/zsh')
+  expect(update?.[2]).toContain('claude plugin marketplace update agent-monitor')
+  expect(update?.[2]).toContain('claude plugin update agent-monitor-pane@agent-monitor')
+  expect((await ui.find({ type: 'Text', text: /new session/ }))?.text).toBe(
+    '✔ Plugin "agent-monitor-pane" updated from 0.2.0 to 0.2.1 · Open a new session to apply.',
+  )
+  await ui.unmount()
+})

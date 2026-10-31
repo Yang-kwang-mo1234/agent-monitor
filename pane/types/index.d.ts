@@ -143,6 +143,12 @@ export type Today = {
   sessions: number // sessions that worked today
 }
 
+// The Update button: pulls the latest pane from its marketplace.
+export type SelfUpdate = {
+  status: 'idle' | 'running' | 'done' | 'failed'
+  message?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-monitor-pane': {
@@ -159,6 +165,7 @@ declare module 'claude-code' {
       branch: Shaped<Branch | null>
       frame: Shaped<number>
       today: Shaped<Today>
+      selfUpdate: Shaped<SelfUpdate>
     }
   }
 }
