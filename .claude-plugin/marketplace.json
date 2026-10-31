@@ -1,0 +1,14 @@
+{
+  "name": "agent-monitor",
+  "description": "Agent Monitor for Claude Code: a live pane beside the chat",
+  "owner": {
+    "name": "Yang-kwang-mo1234"
+  },
+  "plugins": [
+    {
+      "name": "agent-monitor-pane",
+      "source": "./pane",
+      "description": "Agent Monitor in a pane beside the chat: run steps, subagents, context, prompt cache, plan usage, worked time, and the git branch above the prompt"
+    }
+  ]
+}
