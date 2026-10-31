@@ -21,6 +21,7 @@ function compute(sid) {
   let endedAt = null;
   let paused = false;
   let notice = null;
+  let error = null;
 
   for (const e of runEvents) {
     if (endedAt) break; // ignore stragglers after the run ended (e.g. calls racing a cancel)
@@ -42,8 +43,11 @@ function compute(sid) {
       case 'resumed': paused = false; break;
       case 'notice': notice = { message: e.message, t: e.t }; break;
       case 'run_end':
-        if (!endedAt) { status = e.status || 'finished'; endedAt = e.t; }
+        if (!endedAt) { status = e.status || 'finished'; endedAt = e.t; if (e.error) error = e.error; }
         paused = false;
+        break;
+      case 'session_end': // session closed mid-run, e.g. after an interrupt Stop never reported
+        if (!endedAt) { status = 'interrupted'; endedAt = e.t; }
         break;
     }
   }
@@ -76,6 +80,7 @@ function compute(sid) {
     cost,
     sessionCost,
     notice: status === 'waiting' ? notice : null,
+    error,
     now: Date.now(),
   };
 }

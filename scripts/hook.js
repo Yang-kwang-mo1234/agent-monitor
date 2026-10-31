@@ -94,6 +94,11 @@ function main() {
         type: 'tool_end', id: input.tool_use_id || null, tool: input.tool_name, ok: false,
         error: String(input.error || '').slice(0, 300),
       });
+      // Esc during a tool call ends the turn, and Stop does not fire after an interrupt.
+      if (input.is_interrupt) {
+        P.clearControl(sid);
+        P.append(sid, { type: 'run_end', status: 'interrupted' });
+      }
       break;
     case 'Notification':
       P.append(sid, { type: 'notice', message: String(input.message || '').slice(0, 300) });
@@ -101,6 +106,10 @@ function main() {
     case 'Stop':
       P.clearControl(sid);
       P.append(sid, { type: 'run_end', status: 'finished' });
+      break;
+    case 'StopFailure': // the turn ended on an API error instead of Stop
+      P.clearControl(sid);
+      P.append(sid, { type: 'run_end', status: 'failed', error: String(input.error || '').slice(0, 100) });
       break;
     case 'SessionEnd':
       P.clearControl(sid);

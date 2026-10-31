@@ -56,23 +56,23 @@ Dashboard ──POST /api/control──▶ server.js ──write──▶ <sid>.
 | `tool_end` | PostToolUse / PostToolUseFailure | `id`, `tool`, `ok`(bool), `error`(실패 시, 300자) |
 | `paused` / `resumed` | PreToolUse 대기 시작/종료 | – |
 | `notice` | Notification | `message` |
-| `run_end` | Stop / 취소 시 | `status`: `finished` \| `cancelled` |
+| `run_end` | Stop / 취소 / Esc 중단(PostToolUseFailure `is_interrupt`) / StopFailure | `status`: `finished` \| `cancelled` \| `interrupted` \| `failed`, `error`(StopFailure의 오류 종류) |
 | `session_end` | SessionEnd | `reason` |
 
 ### 4.2 `<sid>.meta.json` (statusline이 씀)
 `{ cost, model, cwd, project, updated }` — 보이는 값이 바뀔 때만 다시 써서 SSE 변경 감지를 조용하게 유지.
 
 ### 4.3 `<sid>.control.json`
-`{ action: "pause" | "cancel", t }`. resume = 파일 삭제. UserPromptSubmit / Stop / SessionEnd에서도 삭제(지난 실행의 요청이 다음 실행으로 새지 않게).
+`{ action: "pause" | "cancel", t, done? }`. resume = 파일 삭제. UserPromptSubmit / Stop / StopFailure / SessionEnd / Esc 중단에서도 삭제(지난 실행의 요청이 다음 실행으로 새지 않게). cancel은 처리 후에도 지우지 않고 `done:true`만 붙인다(아래 Cancel 참고).
 
 ### 4.4 state.js 출력 (SSE `state` 이벤트 payload)
 ```
 { session, model, project, prompt, status, startedAt, endedAt,
   steps: [{id, tool, label, icon, source, start, end, ok, error?}],
-  cost /*이번 실행 비용 = meta.cost - run_start.costAtStart*/, sessionCost, notice, now }
+  cost /*이번 실행 비용 = meta.cost - run_start.costAtStart*/, sessionCost, notice, error, now }
 ```
-`status` 우선순위: `run_end`가 있으면 그 값 → 아니면 `paused`(hook이 대기 중) → `pausing`/`cancelling`(control 파일만 있음) → `waiting`(Notification 이후 열린 단계 없음) → `running`. run이 없으면 `idle`, 세션이 없으면 `empty`.
-상태는 **마지막 `run_start` 이후 이벤트만** 사용한다(카드 = 현재/마지막 실행 1건).
+`status` 우선순위: `run_end`가 있으면 그 값(없이 `session_end`가 오면 `interrupted`) → 아니면 `paused`(hook이 대기 중) → `pausing`/`cancelling`(control 파일만 있음) → `waiting`(Notification 이후 열린 단계 없음) → `running`. run이 없으면 `idle`, 세션이 없으면 `empty`.
+상태는 **마지막 `run_start` 이후, 첫 `run_end` 전까지의 이벤트만** 사용한다(카드 = 현재/마지막 실행 1건). 취소와 경합한 늦은 이벤트는 무시한다.
 
 ## 5. 핵심 동작
 
@@ -85,17 +85,24 @@ PreToolUse에서 control이 `cancel`이면 `run_end{status:cancelled}`를 기록
 {"continue": false, "stopReason": "Cancelled from Agent Monitor",
  "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..."}}
 ```
-`continue:false`로 처리를 멈추고, 혹시 무시돼도 `deny`로 해당 도구 호출은 막는 이중 장치.
+`continue:false`로 처리를 멈추고, 혹시 무시돼도 `deny`로 해당 도구 호출은 막는 이중 장치. 문서상 `continue:false`가 우선하며, 실제 실행에서도 턴이 바로 끝났다.
+같은 턴의 병렬 도구 호출도 막도록 control 파일을 지우지 않고 `done:true`로 표시만 한다(`run_end`는 한 번만 기록). 다음 UserPromptSubmit 등에서 지워진다.
+
+### 중단과 API 오류
+- Esc 중단 시 `Stop`은 실행되지 않는다(공식 문서). 도구 실행 중 중단이면 `PostToolUseFailure`에 `is_interrupt:true`가 오므로 `run_end{interrupted}`를 기록한다.
+- 텍스트 생성 중 중단은 알려주는 hook이 없다. 다음 프롬프트가 새 실행을 시작하거나, 세션이 닫히면(`session_end`) `interrupted`로 처리된다.
+- API 오류로 턴이 끝나면 `Stop` 대신 `StopFailure`가 오고, `run_end{failed, error}`로 기록한다. 카드에 오류 종류(예: `rate limit`)가 표시된다.
 
 ### 서버 라우트
 - `GET /` 대시보드, `GET /api/sessions` 최근 25개, `GET /api/state?session=`, `GET /api/log?session=` 원본 JSONL
 - `GET /events?session=` SSE. session이 없으면 "최신 세션 따라가기". 300ms마다 (sid + log/control/meta mtime) 시그니처를 비교해 바뀔 때만 push. 15초 ping
 - `POST /api/control` `{session, action}` — **`content-type: application/json` 필수**(CORS preflight를 강제해 다른 웹사이트가 버튼을 누르지 못하게 함). 127.0.0.1 바인딩
+- 모든 요청은 Host 헤더가 `localhost` / `127.0.0.1` / `[::1]`(포트 포함 가능)일 때만 응답, 그 외 403(DNS rebinding 방지)
 
 ### 설치기
 - 우리 항목 식별: command 문자열에 `agent-monitor`와 `hook.js|statusline.js`가 둘 다 있으면 우리 것
 - 설치 시 먼저 우리 항목을 전부 제거한 뒤 다시 추가 → idempotent. 사용자의 다른 hook 그룹은 보존
-- 등록 이벤트: `PreToolUse`(matcher `*`, timeout 3600), `PostToolUse`, `PostToolUseFailure`(matcher `*`, 10), `UserPromptSubmit`, `Stop`, `Notification`, `SessionStart`, `SessionEnd`(10)
+- 등록 이벤트: `PreToolUse`(matcher `*`, timeout 3600), `PostToolUse`, `PostToolUseFailure`(matcher `*`, 10), `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification`, `SessionStart`, `SessionEnd`(10)
 - 기존 statusLine이 있으면 그 객체를 base64로 `--wrap`에 넣어 감싼다. 별도 설정 파일이 필요 없고, uninstall 때 command에서 디코딩해 원래 값을 복원
 - 매번 `settings.json.agent-monitor.bak` 백업. JSON 파싱 실패 시 아무것도 바꾸지 않고 종료
 
@@ -121,22 +128,29 @@ PreToolUse에서 control이 `cancel`이면 `run_end{status:cancelled}`를 기록
 - Playwright 스크린샷: light 진행 중(+세그먼트 툴팁), 접힌 pill(+아이콘 툴팁), dark 완료(+실패 단계), Log 드로어, 360px 모바일(가로 넘침 없음. 수정 후 재확인)
 - 모든 스크립트 `node --check` 통과
 
+### 7.1 실제 Claude Code 검증 (2026-10-31, macOS, Claude Code 2.1.308, Node 26)
+- 임시 프로젝트에 `install.js --project`로 설치하고 `AGENT_MONITOR_DIR`로 기록을 격리한 뒤 `claude -p --model haiku`로 실행
+- 실제 `tool_use_id`(`toolu_…`)로 시작/종료가 짝지어짐. Bash와 Read 병렬 호출도 각자 맞게 기록
+- 없는 파일 Read → `PostToolUseFailure`의 `error`에 실제 문구가 들어와 `ok:false`로 기록
+- Cancel → `continue:false`로 턴이 실제로 끝나고 최종 답변이 나오지 않음. 병렬 호출까지 모두 거부되는 것도 확인(수정 후)
+- 공식 문서(code.claude.com/docs/en/hooks) 확인: timeout은 **초** 단위, `tool_use_id`·`error`·`is_interrupt` 필드 존재, `PostToolUseFailure`/`StopFailure`는 정식 이벤트, `continue:false`는 event별 결정 필드보다 우선
+- 서버: 외부 Host 헤더 403, 브라우저 대시보드에서 Pause/Resume 버튼, 접힌 pill, Interrupted/Failed 카드 표시 확인
+
 ## 8. 검증하지 못한 것 / 위험 요소 (다음 작업자가 먼저 확인할 것)
 
-1. **실제 Claude Code에서 아직 돌려보지 않았다.** hook 입력 필드명(`tool_use_id`, `hook_event_name`, PostToolUseFailure의 `error`)은 문서·커뮤니티 자료 기준이다. `tool_use_id`가 없으면 같은 tool 이름의 열린 단계로 매칭하는 fallback이 있다.
-2. **`PostToolUseFailure` 이벤트**를 모르는 구버전 Claude Code에서 settings 검증 오류가 나는지 확인되지 않았다. 문제가 되면 install.js에서 그 줄을 빼면 된다(실패는 PostToolUse 응답으로 대체 판단하도록 바꾸면 됨).
-3. `continue:false`가 PreToolUse에서 실제로 턴을 끝내는지(vs. deny만 적용되는지) 실기기 확인 필요.
-4. hook timeout 단위를 **초**로 가정(3600). 밀리초라면 Pause가 3.6초 만에 풀린다.
-5. 병렬 tool 호출 시 단계가 겹친다. 현재 UI는 "첫 번째 열린 단계"만 현재 단계로 보여준다.
-6. 서브에이전트(Task) 내부의 tool 호출도 같은 session_id로 들어오면 한 타임라인에 섞인다(SubagentStop 미처리).
-7. Windows: 경로를 `JSON.stringify`로 따옴표 처리했지만 테스트하지 않았다.
-8. Google Fonts(Inter)는 오프라인이면 시스템 폰트로 대체된다(정상 동작).
+1. **대화형 세션에서 Esc 중단은 실제로 눌러보지 못했다.** 샌드박스 pty에서 대화형 `claude`가 화면을 그리지 않았다. 문서의 `is_interrupt` 필드 기준으로 구현했고 가짜 입력으로만 검증했다. 직접 `sleep 40` 같은 명령 중에 Esc를 눌러 카드가 Interrupted가 되는지 확인할 것.
+2. 텍스트 생성 중 Esc 중단은 hook이 없어 다음 프롬프트나 세션 종료 때까지 Running으로 보인다(알려진 한계).
+3. 병렬 tool 호출 시 단계가 겹친다. 기록은 정확하지만 UI는 "첫 번째 열린 단계"만 현재 단계로 보여준다.
+4. 서브에이전트 내부 tool 호출은 같은 session_id로 들어와 한 타임라인에 섞인다. 입력에 `agent_id`/`agent_type`이 있으므로 이걸로 묶을 수 있다.
+5. statusline 입력에 `workspace`가 빠지면 meta의 project가 null로 덮어써진다(실제 Claude Code는 항상 보내므로 영향 작음).
+6. Windows: 경로를 `JSON.stringify`로 따옴표 처리했지만 테스트하지 않았다.
+7. Google Fonts(Inter)는 오프라인이면 시스템 폰트로 대체된다(정상 동작).
 
 ## 9. 다음에 할 만한 일
 
-- 실제 Claude Code 세션에서 위 1–4번 확인 (가장 우선)
+- 대화형 세션에서 Esc 중단 확인 (위 1번)
 - 완료 단계 라벨을 과거형으로 바꾸기 ("Building the preview" → "Built the preview in 41s", 참고 영상 스타일). `labels.js`에 done 라벨 추가 + state/hist 렌더에 반영
-- 병렬 단계 표시, 서브에이전트 단계 그룹핑
+- 병렬 단계 표시, 서브에이전트 단계 그룹핑(`agent_id` 사용)
 - 여러 세션을 동시에 보여주는 멀티 카드 뷰
 - 오래된 세션 로그 정리(현재는 무한 누적)
 

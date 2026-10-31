@@ -33,7 +33,11 @@ function readBody(req) {
   });
 }
 
+// Only answer to loopback host names, so a DNS-rebinding page can't read logs or press buttons.
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+
 const server = http.createServer(async (req, res) => {
+  if (!LOCAL_HOST.test(req.headers.host || '')) { res.writeHead(403); return res.end('forbidden host'); }
   const url = new URL(req.url, 'http://localhost');
   const q = url.searchParams.get('session');
 

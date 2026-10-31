@@ -84,7 +84,7 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
 .pill.running, .pill.pausing, .pill.cancelling { color: var(--blue); background: var(--blue-bg); }
 .pill.running i { animation: pulse 1.4s ease-in-out infinite; }
 .pill.finished { color: var(--green); background: var(--green-bg); }
-.pill.paused, .pill.waiting { color: var(--amber); background: var(--amber-bg); }
+.pill.paused, .pill.waiting, .pill.interrupted { color: var(--amber); background: var(--amber-bg); }
 .pill.cancelled, .pill.failed { color: var(--red); background: var(--red-bg); }
 .pill.idle, .pill.empty { color: var(--muted); background: var(--chip); }
 @keyframes pulse { 50% { opacity: .35; } }
@@ -238,7 +238,7 @@ const ICONS = {
 };
 const STATUS = {
   running: 'Running', pausing: 'Pausing', cancelling: 'Cancelling', paused: 'Paused', waiting: 'Needs you',
-  finished: 'Finished', cancelled: 'Cancelled', failed: 'Failed', idle: 'Idle', empty: 'Idle',
+  finished: 'Finished', cancelled: 'Cancelled', failed: 'Failed', interrupted: 'Interrupted', idle: 'Idle', empty: 'Idle',
 };
 
 const $ = (s) => document.querySelector(s);
@@ -255,7 +255,7 @@ const clock = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${
 const dur = (ms) => ms < 60000 ? (ms / 1000).toFixed(1) + 's' : clock(ms);
 const human = (ms) => { const s = Math.round(ms / 1000); return s < 60 ? s + 's' : `${Math.floor(s / 60)}m ${s % 60}s`; };
 const live = () => S && S.steps.find((x) => x.end == null);
-const ended = () => ['finished', 'cancelled', 'failed'].includes(S.status);
+const ended = () => ['finished', 'cancelled', 'failed', 'interrupted'].includes(S.status);
 const runMs = () => S && S.startedAt ? (S.endedAt || now()) - S.startedAt : 0;
 const stepMs = (s) => (s.end || now()) - s.start;
 
@@ -312,9 +312,9 @@ function fullHTML() {
   const running = !ended() && S.status !== 'idle';
   let nowRow;
   if (ended()) {
-    const word = { finished: 'Finished', cancelled: 'Cancelled', failed: 'Failed' }[S.status];
+    const word = { finished: 'Finished', cancelled: 'Cancelled', failed: 'Failed', interrupted: 'Interrupted' }[S.status];
     const fails = done.filter((x) => x.ok === false).length;
-    nowRow = `<div class="now"><span class="label">${word} in ${human(runMs())}<small>${S.steps.length} step${S.steps.length === 1 ? '' : 's'}${fails ? ` · ${fails} failed` : ''}</small></span></div>`;
+    nowRow = `<div class="now"><span class="label">${word} in ${human(runMs())}<small>${S.steps.length} step${S.steps.length === 1 ? '' : 's'}${fails ? ` · ${fails} failed` : ''}${S.error ? ` · ${esc(S.error.replace(/_/g, ' '))}` : ''}</small></span></div>`;
   } else if (S.status === 'idle') {
     nowRow = `<div class="now">${ico('claude')}<span class="label" style="color:var(--muted)">Waiting for a prompt</span></div>`;
   } else {
@@ -361,7 +361,7 @@ function fullHTML() {
 function miniHTML() {
   const recent = S.steps.slice(-4);
   const L = live();
-  const color = { finished: 'var(--green)', cancelled: 'var(--red)', failed: 'var(--red)', paused: 'var(--amber)', waiting: 'var(--amber)' }[S.status] || 'var(--blue)';
+  const color = { finished: 'var(--green)', cancelled: 'var(--red)', failed: 'var(--red)', paused: 'var(--amber)', waiting: 'var(--amber)', interrupted: 'var(--amber)' }[S.status] || 'var(--blue)';
   return `<div class="mini" title="Expand">
       <span class="logo ${L ? 'spin' : ''}">${ICONS.claude}</span>
       <span class="model">${esc(S.model || 'Claude')}</span>

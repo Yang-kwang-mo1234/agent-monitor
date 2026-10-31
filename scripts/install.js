@@ -56,7 +56,7 @@ if (uninstall) {
   add('PreToolUse', { matcher: '*', hooks: [cmd(3600)] }); // long timeout so Pause can hold
   add('PostToolUse', { matcher: '*', hooks: [cmd(10)] });
   add('PostToolUseFailure', { matcher: '*', hooks: [cmd(10)] });
-  for (const ev of ['UserPromptSubmit', 'Stop', 'Notification', 'SessionStart', 'SessionEnd']) add(ev, { hooks: [cmd(10)] });
+  for (const ev of ['UserPromptSubmit', 'Stop', 'StopFailure', 'Notification', 'SessionStart', 'SessionEnd']) add(ev, { hooks: [cmd(10)] });
 
   let statusCmd = `node ${JSON.stringify(STATUS)}`;
   if (userStatus && userStatus.command) {
