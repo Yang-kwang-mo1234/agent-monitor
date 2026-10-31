@@ -23,6 +23,7 @@ function compute(sid) {
   let notice = null;
 
   for (const e of runEvents) {
+    if (endedAt) break; // ignore stragglers after the run ended (e.g. calls racing a cancel)
     switch (e.type) {
       case 'tool_start': {
         const s = { id: e.id, tool: e.tool, label: e.label, icon: e.icon, source: e.source, start: e.t, end: null, ok: null };

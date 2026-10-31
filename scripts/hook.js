@@ -33,8 +33,12 @@ function preToolUse(sid, input) {
   }
 
   if (ctrl.action === 'cancel') {
-    P.clearControl(sid);
-    P.append(sid, { type: 'run_end', status: 'cancelled' });
+    // Keep the cancel in place so parallel tool calls in the same batch are denied too.
+    // UserPromptSubmit / Stop / SessionEnd clear it.
+    if (!ctrl.done) {
+      P.writeControl(sid, { ...ctrl, done: true });
+      P.append(sid, { type: 'run_end', status: 'cancelled' });
+    }
     emit({
       continue: false,
       stopReason: 'Cancelled from Agent Monitor',
