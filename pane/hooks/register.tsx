@@ -241,7 +241,7 @@ async function detectTtl($: EngineInterface) {
   await armCache($)
 }
 
-// --- labels (ported from scripts/lib/labels.js) ---------------------------
+// --- labels ---------------------------
 
 const BRANDS: Record<string, string> = {
   github: 'GitHub',

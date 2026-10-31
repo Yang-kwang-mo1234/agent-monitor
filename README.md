@@ -1,13 +1,6 @@
 # Agent Monitor
 
-Claude Code가 지금 무엇을 하고 있는지 보여주는 모니터입니다. 두 가지 형태로 쓸 수 있습니다.
-
-| 형태 | 보이는 곳 | 설치 |
-|---|---|---|
-| **옆 패널 플러그인** (`agent-monitor-pane`, 권장) | 채팅 옆 패널 + 입력창 위 git 브랜치 | Claude Code 플러그인으로 설치 |
-| **대시보드 스킬** (`/agent-monitor`) | 브라우저 `http://localhost:4777` | 스킬 폴더에 두고 `/agent-monitor` |
-
-둘은 따로 동작합니다. 보통은 옆 패널 플러그인 하나면 충분합니다.
+Claude Code가 지금 무엇을 하고 있는지 채팅 옆 패널에 보여주는 플러그인(`agent-monitor-pane`)입니다. 입력창 위에는 git 브랜치 띠도 나옵니다.
 
 ## 빠른 설치 (다른 PC)
 
@@ -133,77 +126,3 @@ claude --plugin-dir pane
 
 context-bar, token-weather, cache-clock, agent-radar, switchboard, review-watch는 [hamzafer/claude-code-mods](https://github.com/hamzafer/claude-code-mods)의 mod를 패널에 맞게 합친 것입니다. `pane/hooks/route.ts`와 `pane/hooks/watch.ts`는 원본 파일을 그대로 가져왔습니다.
 
----
-
-## 대시보드 스킬 (/agent-monitor)
-
-브라우저 대시보드로 보는 이전 형태입니다. Node.js 18 이상이 필요하고, 외부 의존성은 없습니다.
-
-### 설치
-
-```bash
-git clone https://github.com/Yang-kwang-mo1234/agent-monitor.git ~/agent-monitor
-```
-
-```bash
-ln -s ~/agent-monitor ~/.claude/skills/agent-monitor
-```
-
-Claude Code에서 `/agent-monitor`를 입력하면, hook과 status line을 설치하고 대시보드 서버를 띄웁니다. hook은 **다음** 세션부터 적용됩니다.
-
-스킬 없이 직접 설치하려면:
-
-```bash
-node scripts/install.js
-```
-
-```bash
-node scripts/server.js
-```
-
-- `install.js`는 `~/.claude/settings.json`에 hook과 status line을 추가합니다. `--project`를 붙이면 `./.claude/settings.json`에 추가합니다.
-- 여러 번 실행해도 안전하고, 매번 `settings.json.agent-monitor.bak` 백업을 남깁니다.
-
-### 사용법
-
-브라우저에서 <http://localhost:4777>을 엽니다(127.0.0.1에서만 접근 가능).
-
-- **Pause / Resume / Cancel**: 다음 tool 호출 직전에 동작합니다.
-- **⌄⌃**: 카드를 접거나 펼칩니다. **Log ↗**: 원본 이벤트 로그(JSONL)를 엽니다.
-
-셸에서 제어하려면(`session_id`를 생략하면 최근 세션에 적용):
-
-```bash
-node scripts/control.js pause
-```
-
-```bash
-node scripts/control.js resume
-```
-
-```bash
-node scripts/control.js cancel <session_id>
-```
-
-### 제거
-
-```bash
-node scripts/install.js --uninstall
-```
-
-기록된 로그(`~/.claude/agent-monitor`)는 남아 있으니, 필요 없으면 직접 지우세요.
-
-### 환경 변수
-
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `AGENT_MONITOR_PORT` | `4777` | 대시보드 서버 포트 |
-| `AGENT_MONITOR_DIR` | `~/.claude/agent-monitor` | 세션 로그와 제어 파일 위치 |
-
-### 알아둘 점
-
-- 비용은 Claude Code의 클라이언트 측 추정치이고, 카드에는 이번 실행분만 표시됩니다.
-- Pause는 최대 55분까지 유지된 뒤 자동으로 재개됩니다.
-- 텍스트 생성 중 Esc로 중단하면, 다음 프롬프트 전까지 Running으로 보일 수 있습니다.
-
-구현 배경과 미검증 사항은 [HANDOFF.md](HANDOFF.md), 스킬 동작 정의는 [SKILL.md](SKILL.md)를 참고하세요.
