@@ -9,6 +9,28 @@ Claude Code가 지금 무엇을 하고 있는지 보여주는 모니터입니다
 
 둘은 따로 동작합니다. 보통은 옆 패널 플러그인 하나면 충분합니다.
 
+## 빠른 설치 (다른 PC)
+
+1. 저장소가 비공개이므로 GitHub 인증을 먼저 해 둡니다(SSH 키가 있으면 생략).
+
+   ```bash
+   gh auth login
+   ```
+
+   ```bash
+   gh auth setup-git
+   ```
+
+2. 터미널에서 Claude Code를 열고, 프롬프트에 다음을 입력해 설치합니다.
+
+   ```
+   /plugin install agent-monitor-pane --marketplace Yang-kwang-mo1234/agent-monitor
+   ```
+
+3. `Add marketplace?`에 `y`를 입력하고, 설치 범위는 **user**를 고릅니다. 다음 세션부터 옆 패널이 자동으로 열립니다.
+
+자세한 내용은 아래 [옆 패널 플러그인](#옆-패널-플러그인-agent-monitor-pane)을 보세요.
+
 ---
 
 ## 옆 패널 플러그인 (agent-monitor-pane)
