@@ -153,8 +153,10 @@ const release = atom(
   {} as Release,
   { shape: 'release-1' },
 )
-const LATEST_URL =
-  'https://raw.githubusercontent.com/Yang-kwang-mo1234/agent-monitor/main/pane/.claude-plugin/plugin.json'
+// The marketplace's own clone, fetched with the person's git credentials, so
+// a private repository reads as well as a public one.
+const LATEST_SH =
+  'm=~/.claude/plugins/marketplaces/agent-monitor && git -C "$m" fetch -q origin main && git -C "$m" show FETCH_HEAD:pane/.claude-plugin/plugin.json'
 const RELEASE_CHECK_MS = 30 * 60_000
 
 const versionOf = (json: string) => {
@@ -181,8 +183,10 @@ async function checkRelease($: EngineInterface) {
   const installed = versionOf(
     await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).catch(() => ''),
   )
-  const res = await $.http.fetch(LATEST_URL).catch(() => undefined)
-  const latest = res?.ok ? versionOf(res.text) : undefined
+  const res = await $.process
+    .run(['/bin/zsh', '-lc', LATEST_SH], { timeoutMs: 60_000 })
+    .catch(() => undefined)
+  const latest = res?.exitCode === 0 ? versionOf(res.stdout) : undefined
   const cur = await read($, release)
   const next: Release = { installed, latest: latest ?? cur.latest }
   if (JSON.stringify(cur) !== JSON.stringify(next)) await update($, release, () => next)

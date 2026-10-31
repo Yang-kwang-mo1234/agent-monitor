@@ -511,22 +511,26 @@ test('another session running now counts live, and up to its last heartbeat once
   expect(await total()).toBe('20m')
 })
 
-// The installed plugin.json says `installed`; the marketplace's says `latest`.
+// The installed plugin.json says `installed`; the marketplace's says `latest`,
+// returned as the git read's result for a `process.run` hook to give back.
 const releases = (on: any, installed: string, latest: string) => {
   on('fs.read', (_: unknown, e: any) =>
     e.path.endsWith('.claude-plugin/plugin.json') ? { value: JSON.stringify({ version: installed }) } : undefined,
   )
-  on('http.fetch', (_: unknown, e: any) =>
-    e.url.endsWith('/pane/.claude-plugin/plugin.json')
-      ? { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: latest }) } }
-      : undefined,
-  )
+  return (argv: readonly string[]) =>
+    argv[2]?.includes('FETCH_HEAD:pane/.claude-plugin/plugin.json')
+      ? { exitCode: 0, stdout: JSON.stringify({ version: latest }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+      : undefined
 }
 
 test('Update stays off with the newest pane installed', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
-  releases(on, '0.2.2', '0.2.2')
+  const latest = releases(on, '0.2.2', '0.2.2')
+  on('process.run', (_: unknown, e: any) => {
+    const res = latest(e.argv)
+    return { value: res ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -540,8 +544,11 @@ test('Update pulls the latest pane and says a new session applies it', async ($,
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
   const ran: string[][] = []
+  const latest = releases(on, '0.2.0', '0.2.1')
   on('process.run', (_: unknown, e: any) => {
     ran.push(e.argv)
+    const res = latest(e.argv)
+    if (res) return { value: res }
     const isUpdate = e.argv[0] === '/bin/zsh'
     return {
       value: {
@@ -554,14 +561,12 @@ test('Update pulls the latest pane and says a new session applies it', async ($,
     }
   })
 
-  releases(on, '0.2.0', '0.2.1')
-
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /^v0\.2\.0/ }))?.text).toBe('v0.2.0 → v0.2.1')
   await ui.press({ plugin: 'agent-monitor-pane', key: 'self-update' })
 
-  const update = ran.find(a => a[0] === '/bin/zsh')
+  const update = ran.find(a => a[0] === '/bin/zsh' && a[2]?.includes('plugin update'))
   expect(update?.[2]).toContain('claude plugin marketplace update agent-monitor')
   expect(update?.[2]).toContain('claude plugin update agent-monitor-pane@agent-monitor')
   expect((await ui.find({ type: 'Text', text: /new session/ }))?.text).toBe(
