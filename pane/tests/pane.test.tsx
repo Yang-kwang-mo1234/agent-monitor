@@ -154,7 +154,7 @@ test('Pause asks before the next tool call, and Cancel there denies it', async (
   expect(state.aborted).toEqual(['turn-3'])
 })
 
-test('the 5-hour and weekly windows show with their reset times', async ($, on) => {
+test('the 5-hour and weekly windows show their pace and reset times', async ($, on) => {
   const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
   engine(on, state)
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
@@ -175,12 +175,11 @@ test('the 5-hour and weekly windows show with their reset times', async ($, on) 
   )
   expect(names).toEqual(['5-hour', 'Weekly'])
   expect((await ui.find({ type: 'Text', text: /^92\.5%$/ }))?.text).toBe('92.5%')
-  expect((await ui.find({ type: 'Text', text: /resets in 2h/ }))?.text).toBe(
-    'resets in 2h 14m',
-  )
-  expect((await ui.find({ type: 'Text', text: /resets in 3d/ }))?.text).toBe(
-    'resets in 3d 2h',
-  )
+  expect((await ui.find({ type: 'Text', text: /^↻2h/ }))?.text).toBe('↻2h14m')
+  expect((await ui.find({ type: 'Text', text: /^↻3d/ }))?.text).toBe('↻3d2h')
+  // 92.5% used with 55% of the 5-hour window gone is over pace; 41% with 56% of the week gone is under.
+  const pace = (await ui.findAll({ type: 'Text', text: /^(▲초과|▼여유)$/ })).map(n => n.text)
+  expect(pace).toEqual(['▲초과', '▼여유'])
   await ui.unmount()
 })
 

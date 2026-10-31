@@ -339,12 +339,33 @@ const LIMIT_NAMES: Record<string, string> = {
   seven_day: 'Weekly',
   spend_limit: 'Spend limit',
 }
+// How long each window lasts, for the pace mark; a spend limit has none.
+const LIMIT_SPAN_MS: Record<string, number> = {
+  five_hour: 5 * 3_600_000,
+  seven_day: 7 * 86_400_000,
+}
 const LIMIT_ORDER = ['five_hour', 'seven_day', 'spend_limit']
 const limitColor = (pct: number) =>
   pct >= 90 ? 'error' : pct >= 70 ? 'warning' : 'success'
-const bar = (pct: number, cells: number) => {
+// The share of the window gone by, 0 to 1; undefined without a reset time or a known length.
+const elapsed = (w: RateLimit, t: number) => {
+  const span = LIMIT_SPAN_MS[w.kind]
+  const at = w.resetsAt ? Date.parse(w.resetsAt) : NaN
+  if (span === undefined || Number.isNaN(at)) return undefined
+  return Math.min(1, Math.max(0, 1 - (at - t) / span))
+}
+// The bar as runs: used cells, the pace mark (where usage would be at an even rate), free cells.
+const bar = (pct: number, pace: number | undefined, cells: number) => {
   const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * cells)
-  return { filled: '█'.repeat(filled), empty: '░'.repeat(cells - filled) }
+  const mark = pace === undefined ? -1 : Math.min(cells - 1, Math.floor(pace * cells))
+  const runs: { kind: 'used' | 'mark' | 'free'; text: string; isUsed: boolean }[] = []
+  for (let i = 0; i < cells; i++) {
+    const kind = i === mark ? 'mark' : i < filled ? 'used' : 'free'
+    const last = runs.at(-1)
+    if (last && last.kind === kind) last.text += kind === 'used' ? '█' : '░'
+    else runs.push({ kind, text: kind === 'mark' ? '┃' : kind === 'used' ? '█' : '░', isUsed: i < filled })
+  }
+  return runs
 }
 const resetsIn = (iso: string | undefined, t: number) => {
   const at = iso ? Date.parse(iso) : NaN
@@ -352,7 +373,7 @@ const resetsIn = (iso: string | undefined, t: number) => {
   const m = Math.max(0, Math.round((at - t) / 60_000))
   const d = Math.floor(m / 1440)
   const h = Math.floor((m % 1440) / 60)
-  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m % 60}m` : `${m}m`
+  return d > 0 ? `${d}d${h}h` : h > 0 ? `${h}h${m % 60}m` : `${m}m`
 }
 const percentColor = (level: number) =>
   level >= 0.9 ? 'red' : level >= 0.7 ? 'yellow' : 'green'
@@ -1510,23 +1531,38 @@ export const register: Register = (on, options) => {
           <Text dimColor>No reading yet (shown after a reply on a subscription).</Text>
         )}
         {windows.map(w => {
-          const b = bar(w.percentUsed, limitCells)
+          const pace = elapsed(w, wall)
+          const color = limitColor(w.percentUsed)
           const reset = resetsIn(w.resetsAt, wall)
+          // Under the even-rate line there is room to spare; over it, the window runs out early.
+          const isAhead = pace !== undefined && w.percentUsed > pace * 100
           return (
             <Box key={w.kind} flexDirection="column">
               <Box flexDirection="row" justifyContent="space-between">
                 <Text>{LIMIT_NAMES[w.kind] ?? w.kind}</Text>
-                <Text mono color={limitColor(w.percentUsed)}>
-                  {`${w.percentUsed}%`}
-                </Text>
+                <Box flexDirection="row" gap={1}>
+                  <Text mono color={color}>
+                    {`${w.percentUsed}%`}
+                  </Text>
+                  {pace !== undefined && (
+                    <Text color={isAhead ? 'error' : 'success'}>{isAhead ? '▲초과' : '▼여유'}</Text>
+                  )}
+                  {reset !== '' && <Text mono dimColor>{`↻${reset}`}</Text>}
+                </Box>
               </Box>
-              <Box flexDirection="row" justifyContent="space-between">
-                <Text mono>
-                  <Text color={limitColor(w.percentUsed)}>{b.filled}</Text>
-                  <Text dimColor>{b.empty}</Text>
-                </Text>
-                <Text dimColor>{reset && `resets in ${reset}`}</Text>
-              </Box>
+              <Text mono>
+                {bar(w.percentUsed, pace, limitCells).map(run =>
+                  run.kind === 'mark' ? (
+                    <Text color="text" weight="bold" backgroundColor={run.isUsed ? color : undefined}>
+                      {run.text}
+                    </Text>
+                  ) : run.kind === 'used' ? (
+                    <Text color={color}>{run.text}</Text>
+                  ) : (
+                    <Text dimColor>{run.text}</Text>
+                  ),
+                )}
+              </Text>
             </Box>
           )
         })}
