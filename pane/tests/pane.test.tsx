@@ -427,47 +427,16 @@ test('the branch band shows the branch, changes and sync above the prompt', asyn
   await band.unmount()
 })
 
-test('the Claude mark walks only while work runs, faster with more of it', async ($, on) => {
+test('no mark walks the bottom row while work runs', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   const clock = engine(on, state)
-  on('agent.spawn', (_: unknown, e: any) => ({ model: 'claude-haiku-5-5', agentId: e.tool_use_id }))
-  on('ui.toast', () => ({ value: undefined }))
-  const place = async () => {
-    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-    const rows = (await ui.findAll({ type: 'Text', text: /[╲─╱]/ })).slice(-3).map(n => n.text!)
-    await ui.unmount()
-    expect(rows.map(t => t.trimStart())).toEqual(['╲ │ ╱', '─ ✻ ─', '╱ │ ╲'])
-    return rows[1]!.indexOf('─')
-  }
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  expect(await place()).toBe(0)
-  await clock.advance(5_000)
-  expect(await place()).toBe(0) // idle: it stands still
-
   await $.turn.start({ text: 'work', turnId: 'turn-m' })
-  await clock.advance(480 * 3)
-  expect(await place()).toBe(3) // one thing running: a step every 480 ms
-
-  for (const id of ['s1', 's2', 's3']) {
-    await $.agent.spawn({
-      tool_use_id: id, prompt: 'x', description: `job ${id}`, subagentType: 'Explore',
-      parentModel: 'claude-opus-5-5', background: true, fork: false,
-    } as any)
-  }
-  await clock.advance(1_000) // the next retune picks up the load: 4 running, 120 ms a step
-  const before = await place()
-  await clock.advance(120 * 5)
-  expect(await place()).toBe(before + 5)
-
-  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'turn-m', reason: 'answer' })
-  for (const id of ['s1', 's2', 's3']) {
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: `t-${id}`, agentId: id, reason: 'answer' } as any)
-  }
-  await clock.advance(1_000)
-  const stopped = await place()
-  await clock.advance(3_000)
-  expect(await place()).toBe(stopped)
+  await clock.advance(2_000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.findAll({ type: 'Text', text: /✻/ })).toHaveLength(0)
+  await ui.unmount()
 })
 
 const ymd = (ms: number) => {
@@ -542,6 +511,31 @@ test('another session running now counts live, and up to its last heartbeat once
   expect(await total()).toBe('20m')
 })
 
+// The installed plugin.json says `installed`; the marketplace's says `latest`.
+const releases = (on: any, installed: string, latest: string) => {
+  on('fs.read', (_: unknown, e: any) =>
+    e.path.endsWith('.claude-plugin/plugin.json') ? { value: JSON.stringify({ version: installed }) } : undefined,
+  )
+  on('http.fetch', (_: unknown, e: any) =>
+    e.url.endsWith('/pane/.claude-plugin/plugin.json')
+      ? { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ version: latest }) } }
+      : undefined,
+  )
+}
+
+test('Update stays off with the newest pane installed', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  releases(on, '0.2.2', '0.2.2')
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^v0\.2/ }))?.text).toBe('v0.2.2')
+  expect(await ui.find({ type: 'Button', key: 'self-update' })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: 'Update' }))?.text).toBe('Update')
+  await ui.unmount()
+})
+
 test('Update pulls the latest pane and says a new session applies it', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
@@ -560,8 +554,11 @@ test('Update pulls the latest pane and says a new session applies it', async ($,
     }
   })
 
+  releases(on, '0.2.0', '0.2.1')
+
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^v0\.2\.0/ }))?.text).toBe('v0.2.0 → v0.2.1')
   await ui.press({ plugin: 'agent-monitor-pane', key: 'self-update' })
 
   const update = ran.find(a => a[0] === '/bin/zsh')

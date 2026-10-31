@@ -9,6 +9,7 @@ import type {
   Handoff,
   RateLimit,
   Reading,
+  Release,
   Route,
   Run,
   RunStatus,
@@ -145,8 +146,57 @@ const selfUpdate = atom(
 const UPDATE_SH =
   'claude plugin marketplace update agent-monitor && claude plugin update agent-monitor-pane@agent-monitor'
 
+// This pane's version and the marketplace's newest, so Update is live only
+// when there is something to pull.
+const release = atom(
+  { plugin: 'agent-monitor-pane', key: 'release' } as const,
+  {} as Release,
+  { shape: 'release-1' },
+)
+const LATEST_URL =
+  'https://raw.githubusercontent.com/Yang-kwang-mo1234/agent-monitor/main/pane/.claude-plugin/plugin.json'
+const RELEASE_CHECK_MS = 30 * 60_000
+
+const versionOf = (json: string) => {
+  try {
+    const v: unknown = JSON.parse(json).version
+    return typeof v === 'string' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// True when `a` is a newer dotted version than `b`.
+const isNewer = (a: string, b: string) => {
+  const x = a.split('.').map(Number)
+  const y = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0)
+    if (d !== 0) return d > 0
+  }
+  return false
+}
+
+async function checkRelease($: EngineInterface) {
+  const installed = versionOf(
+    await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).catch(() => ''),
+  )
+  const res = await $.http.fetch(LATEST_URL).catch(() => undefined)
+  const latest = res?.ok ? versionOf(res.text) : undefined
+  const cur = await read($, release)
+  const next: Release = { installed, latest: latest ?? cur.latest }
+  if (JSON.stringify(cur) !== JSON.stringify(next)) await update($, release, () => next)
+}
+
+const canUpdate = (r: Release, su: SelfUpdate) =>
+  su.status !== 'running' &&
+  su.status !== 'done' &&
+  r.installed !== undefined &&
+  r.latest !== undefined &&
+  isNewer(r.latest, r.installed)
+
 async function updatePane($: EngineInterface) {
-  if ((await read($, selfUpdate)).status === 'running') return
+  if (!canUpdate(await read($, release), await read($, selfUpdate))) return
   await update($, selfUpdate, (): SelfUpdate => ({ status: 'running' }))
   const res = await $.process
     .run(['/bin/zsh', '-lc', UPDATE_SH], { timeoutMs: 180_000 })
@@ -165,11 +215,6 @@ const branch = atom(
   null as Branch | null,
   { shape: 'branch-1' },
 )
-
-// The mascot's step count: its place along the bottom row is a bounce over it.
-const frame = atom({ plugin: 'agent-monitor-pane', key: 'frame' } as const, 0, {
-  shape: 'frame-1',
-})
 
 const today = atom(
   { plugin: 'agent-monitor-pane', key: 'today' } as const,
@@ -828,47 +873,6 @@ const hoursMinutes = (ms: number) => {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
 
-// --- mascot ---------------------------------------------------------------
-
-// The Claude mark walks the pane's bottom row while work runs: one cell per
-// step, faster with more going on at once (the turn, its open tool call, each
-// running subagent and background shell). It stands still when nothing runs.
-// Three rows tall, so it reads at about three times a line of text.
-const MASCOT = ['╲ │ ╱', '─ ✻ ─', '╱ │ ╲']
-const MASCOT_WIDTH = 5
-const SLOWEST_MS = 480
-const FASTEST_MS = 120
-let mascotTimer: Timer | undefined
-let mascotMs = 0
-
-// How much is running now: 0 when idle or paused.
-async function workload($: EngineInterface) {
-  const r = await read($, run)
-  const busy = (await read($, agents)).filter(a => a.status === 'running').length
-  if (r.status !== 'running' && busy === 0) return 0
-  const turn = r.status === 'running' ? 1 : 0
-  const step = r.status === 'running' && r.steps.some(x => x.endedAt === undefined) ? 1 : 0
-  return turn + step + busy
-}
-
-// Starts, retunes or stops the walk to match the workload.
-async function retuneMascot($: EngineInterface) {
-  const load = await workload($)
-  const ms = load === 0 ? 0 : Math.max(FASTEST_MS, Math.round(SLOWEST_MS / load))
-  if (ms === mascotMs) return
-  mascotTimer?.cancel()
-  mascotTimer = undefined
-  mascotMs = ms
-  if (ms > 0) mascotTimer = $.clock.every(ms, () => void update($, frame, f => f + 1).catch(() => {}))
-}
-
-// Where `step` puts the mark on a row of `span` cells, walking there and back.
-const bounce = (step: number, span: number) => {
-  if (span <= 0) return 0
-  const t = step % (span * 2)
-  return t <= span ? t : span * 2 - t
-}
-
 // --- hooks ----------------------------------------------------------------
 
 // Set when Cancel aborts the turn, so turn.complete reports Cancelled rather
@@ -911,6 +915,7 @@ export const register: Register = (on, options) => {
     if (known === '5m' || known === '1h') await update($, ttl, () => known)
     await refreshContext($).catch(() => {})
     await armCache($).catch(() => {})
+    void checkRelease($).catch(() => {})
     for (const t of agentTimers) t.cancel()
     agentTimers = [
       // Elapsed times tick while a row shows, and a finished row leaves after 30 s.
@@ -918,10 +923,10 @@ export const register: Register = (on, options) => {
         void (async () => {
           const at = await $.clock.now()
           if ((await read($, agents)).some(a => isShown(a, at - 3_000))) await update($, now, () => at)
-          await retuneMascot($)
         })().catch(() => {})
       }),
       $.clock.every(5_000, () => void pollShells($).catch(() => {})),
+      $.clock.every(RELEASE_CHECK_MS, () => void checkRelease($).catch(() => {})),
       // A branch switched in a terminal shows within a few seconds.
       $.clock.every(5_000, () => void refreshBranch($).catch(() => {})),
       // Other sessions' turns, and a new day at midnight.
@@ -1130,7 +1135,6 @@ export const register: Register = (on, options) => {
     ticker = $.clock.every(1000, () => {
       void $.clock.now().then(t2 => update($, now, () => t2))
     })
-    await retuneMascot($)
     await startWorking($, t).catch(() => {})
 
     return next(e)
@@ -1232,7 +1236,6 @@ export const register: Register = (on, options) => {
 
     ticker?.cancel()
     ticker = undefined
-    void retuneMascot($).catch(() => {})
     const endedAt = await $.clock.now()
     const cost = (await $.session.usage()).cost?.usd
     const status: RunStatus = isCancelling
@@ -1505,26 +1508,7 @@ export const register: Register = (on, options) => {
       )
 
     const windows = await read($, limits)
-    const pad = ' '.repeat(bounce(await read($, frame), Math.max(0, width - MASCOT_WIDTH)))
-    const mascot = (
-      <Box key="mascot" flexDirection="column">
-        {MASCOT.map(row => (
-          <Text mono color="claude" weight="bold">
-            {pad + row}
-          </Text>
-        ))}
-      </Box>
-    )
-    // The body fills the pane's height, so the mark sits on its bottom rows.
     const bodyRows = e.props.scroll?.bodyRows ?? 0
-    const page = (content: RenderChildren) => (
-      <Box flexDirection="column" minHeight={bodyRows}>
-        <Box flexDirection="column" gap={1} flexGrow={1}>
-          {content}
-        </Box>
-        {mascot}
-      </Box>
-    )
     const limitCells = cells0(width)
     const day = await read($, today)
     // This session's running turn, live, clipped to today.
@@ -1538,20 +1522,38 @@ export const register: Register = (on, options) => {
     const mineMs = total([...day.mine, ...live])
     const others = day.sessions - (day.mine.length > 0 ? 1 : 0)
     const su = await read($, selfUpdate)
+    const rel = await read($, release)
+    // Button takes no disabled state: with nothing to pull, a dim label stands in.
     const updateView = (
-      <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
-          <Text weight="medium">Pane update</Text>
-          <Button key="self-update" onPress={() => void updatePane($)}>
-            {su.status === 'running' ? 'Updating…' : 'Update'}
-          </Button>
-        </Box>
+      <Box flexDirection="column" alignItems="flex-end">
         {su.status === 'done' && (
           <Text color="success">{`${su.message ? `${su.message} · ` : ''}Open a new session to apply.`}</Text>
         )}
         {su.status === 'failed' && (
           <Text color="error">{`Update failed${su.message ? `: ${su.message}` : ''}`}</Text>
         )}
+        <Box flexDirection="row" gap={1}>
+          <Text mono dimColor>
+            {rel.installed ? `v${rel.installed}` : ''}
+            {canUpdate(rel, su) && rel.latest ? ` → v${rel.latest}` : ''}
+          </Text>
+          {canUpdate(rel, su) ? (
+            <Button key="self-update" variant="primary" onPress={() => void updatePane($)}>
+              Update
+            </Button>
+          ) : (
+            <Text dimColor>{su.status === 'running' ? 'Updating…' : 'Update'}</Text>
+          )}
+        </Box>
+      </Box>
+    )
+    // The body fills the pane's height, so the version and Update sit at its bottom right.
+    const page = (content: RenderChildren) => (
+      <Box flexDirection="column" minHeight={bodyRows}>
+        <Box flexDirection="column" gap={1} flexGrow={1}>
+          {content}
+        </Box>
+        {updateView}
       </Box>
     )
     const todayView = (
@@ -1622,7 +1624,6 @@ export const register: Register = (on, options) => {
           {cacheView}
           {usage}
           {todayView}
-          {updateView}
         </>,
       )
     }
@@ -1709,7 +1710,6 @@ export const register: Register = (on, options) => {
         {cacheView}
         {usage}
         {todayView}
-        {updateView}
       </>,
     )
   })

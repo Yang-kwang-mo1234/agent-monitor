@@ -143,6 +143,12 @@ export type Today = {
   sessions: number // sessions that worked today
 }
 
+// This pane's version and the marketplace's newest; either is absent until read.
+export type Release = {
+  installed?: string
+  latest?: string
+}
+
 // The Update button: pulls the latest pane from its marketplace.
 export type SelfUpdate = {
   status: 'idle' | 'running' | 'done' | 'failed'
@@ -163,7 +169,7 @@ declare module 'claude-code' {
       agents: Shaped<AgentRow[]>
       selected: Shaped<string | null>
       branch: Shaped<Branch | null>
-      frame: Shaped<number>
+      release: Shaped<Release>
       today: Shaped<Today>
       selfUpdate: Shaped<SelfUpdate>
     }
