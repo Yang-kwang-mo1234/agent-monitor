@@ -80,7 +80,7 @@ test('a run shows its steps, cost and status', { options: { billing: 'metered' }
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /Running/ }))?.text).toBe('Running')
-  expect((await ui.find({ type: 'Text', text: /\$0\./ }))?.text).toBe('$0.036')
+  expect((await ui.findAll({ type: 'Text', text: /\$0\./ })).map(n => n.text)).toContain('$0.036')
   expect(
     (await ui.find({ type: 'Text', text: /Building the preview/ }))?.text,
   ).toBe('✓ Building the preview')
@@ -211,7 +211,7 @@ test('Usage sits at the top of the pane, above the model, idle and while running
   expect(await order()).toEqual(['5-hour', 'Claude Opus 5.5'])
 })
 
-test('Spend and Worked today sit under the turn, above Context, each group behind a divider', async ($, on) => {
+test('Fixed-height groups sit above the turn, Activity below it, each behind a divider', async ($, on) => {
   const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
   engine(on, state)
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
@@ -227,14 +227,12 @@ test('Spend and Worked today sit under the turn, above Context, each group behin
     return texts.filter((s, i) => texts.indexOf(s) === i)
   }
 
-  const expected = ['── This turn', 'Claude Opus 5.5', '── Cost & time', 'Spend', 'Worked today', '── Context', 'Context']
+  const expected = ['── Cost & time', 'Spend', 'Worked today', '── Context', 'Context', '── This turn', 'Claude Opus 5.5']
   expect(await order()).toEqual(expected)
 
   await $.turn.start({ text: 'ship it', turnId: 'turn-1' })
   await $.tool.call({ tool: 'Bash', command: 'ls', description: 'Listing files' } as any)
-  const running = await order()
-  expect(running.indexOf('Worked today')).toBeLessThan(running.indexOf('── Activity'))
-  expect(running.indexOf('── Activity')).toBeLessThan(running.indexOf('── Context'))
+  expect(await order()).toEqual([...expected, '── Activity'])
 })
 
 const measureContext = (state: State, percent: number) => {

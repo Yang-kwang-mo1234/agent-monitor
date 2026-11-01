@@ -2240,18 +2240,23 @@ export const register: Register = (on, options) => {
         {`── ${name} ${'─'.repeat(Math.max(2, width - name.length - 4))}`}
       </Text>
     )
-    // Cost & time, Activity and Context follow the turn, in that order.
-    const groups = (
+    // Sections that keep their height sit above the turn, so they stay put
+    // while it runs; the turn and Activity, which grow and shrink, follow.
+    const fixed = (
       <Box flexDirection="column" gap={1}>
         {divider('Cost & time')}
         {spendView}
         {todayView}
-        {(toolsView || agentsView) && divider('Activity')}
-        {toolsView}
-        {agentsView}
         {divider('Context')}
         {contextView}
         {cacheView}
+      </Box>
+    )
+    const activity = (toolsView || agentsView) && (
+      <Box flexDirection="column" gap={1}>
+        {divider('Activity')}
+        {toolsView}
+        {agentsView}
       </Box>
     )
 
@@ -2259,10 +2264,11 @@ export const register: Register = (on, options) => {
       return page(
         <Box flexDirection="column" gap={1}>
           {usage}
+          {fixed}
           {divider('This turn')}
           <Text weight="semibold">{model}</Text>
           <Text dimColor>Waiting for the next prompt.</Text>
-          {groups}
+          {activity}
         </Box>,
       )
     }
@@ -2270,6 +2276,7 @@ export const register: Register = (on, options) => {
     return page(
       <Box flexDirection="column" gap={1}>
         {usage}
+        {fixed}
         {divider('This turn')}
         <Box flexDirection="row" justifyContent="space-between">
           <Text weight="semibold">{model}</Text>
@@ -2353,7 +2360,7 @@ export const register: Register = (on, options) => {
             {done.length}/{r.steps.length}
           </Text>
         </Box>
-        {groups}
+        {activity}
       </Box>,
     )
   })

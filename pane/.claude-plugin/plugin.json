@@ -1,6 +1,6 @@
 {
   "name": "agent-monitor-pane",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Agent Monitor in a pane beside the chat: run steps, tool failures, context, prompt cache, plan usage, spend and budget, subagents and background shells with Switchboard model routing",
   "author": {
     "name": "Yang-kwang-mo1234",
