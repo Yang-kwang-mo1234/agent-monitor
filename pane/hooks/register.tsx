@@ -2239,11 +2239,11 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" gap={1}>
           <Text weight="semibold">{model}</Text>
           <Text dimColor>Waiting for the next prompt.</Text>
+          {usage}
           {toolsView}
           {agentsView}
           {contextView}
           {cacheView}
-          {usage}
           {spendView}
           {todayView}
         </Box>,
@@ -2334,11 +2334,11 @@ export const register: Register = (on, options) => {
             {done.length}/{r.steps.length}
           </Text>
         </Box>
+        {usage}
         {toolsView}
         {agentsView}
         {contextView}
         {cacheView}
-        {usage}
         {spendView}
         {todayView}
       </Box>,
