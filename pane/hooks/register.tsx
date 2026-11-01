@@ -2234,18 +2234,35 @@ export const register: Register = (on, options) => {
         </Box>
       )
 
+    // A dim `── Name ───` rule that opens each group of related sections.
+    const divider = (name: string) => (
+      <Text key={`group-${name}`} dimColor wrap="truncate-end">
+        {`── ${name} ${'─'.repeat(Math.max(2, width - name.length - 4))}`}
+      </Text>
+    )
+    // Cost & time, Activity and Context follow the turn, in that order.
+    const groups = (
+      <Box flexDirection="column" gap={1}>
+        {divider('Cost & time')}
+        {spendView}
+        {todayView}
+        {(toolsView || agentsView) && divider('Activity')}
+        {toolsView}
+        {agentsView}
+        {divider('Context')}
+        {contextView}
+        {cacheView}
+      </Box>
+    )
+
     if (r.status === 'idle') {
       return page(
         <Box flexDirection="column" gap={1}>
           {usage}
+          {divider('This turn')}
           <Text weight="semibold">{model}</Text>
           <Text dimColor>Waiting for the next prompt.</Text>
-          {toolsView}
-          {agentsView}
-          {contextView}
-          {cacheView}
-          {spendView}
-          {todayView}
+          {groups}
         </Box>,
       )
     }
@@ -2253,6 +2270,7 @@ export const register: Register = (on, options) => {
     return page(
       <Box flexDirection="column" gap={1}>
         {usage}
+        {divider('This turn')}
         <Box flexDirection="row" justifyContent="space-between">
           <Text weight="semibold">{model}</Text>
           <Box flexDirection="row" gap={1}>
@@ -2335,12 +2353,7 @@ export const register: Register = (on, options) => {
             {done.length}/{r.steps.length}
           </Text>
         </Box>
-        {toolsView}
-        {agentsView}
-        {contextView}
-        {cacheView}
-        {spendView}
-        {todayView}
+        {groups}
       </Box>,
     )
   })

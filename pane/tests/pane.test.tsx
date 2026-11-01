@@ -211,6 +211,32 @@ test('Usage sits at the top of the pane, above the model, idle and while running
   expect(await order()).toEqual(['5-hour', 'Claude Opus 5.5'])
 })
 
+test('Spend and Worked today sit under the turn, above Context, each group behind a divider', async ($, on) => {
+  const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
+  engine(on, state)
+  on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const order = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const texts = (
+      await ui.findAll({ type: 'Text', text: /^(── \S.*|Claude Opus 5\.5|Spend|Worked today|Context)$/ })
+    ).map(n => n.text.replace(/ ─+$/, ''))
+    await ui.unmount()
+    return texts.filter((s, i) => texts.indexOf(s) === i)
+  }
+
+  const expected = ['── This turn', 'Claude Opus 5.5', '── Cost & time', 'Spend', 'Worked today', '── Context', 'Context']
+  expect(await order()).toEqual(expected)
+
+  await $.turn.start({ text: 'ship it', turnId: 'turn-1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'Listing files' } as any)
+  const running = await order()
+  expect(running.indexOf('Worked today')).toBeLessThan(running.indexOf('── Activity'))
+  expect(running.indexOf('── Activity')).toBeLessThan(running.indexOf('── Context'))
+})
+
 const measureContext = (state: State, percent: number) => {
   state.pct = percent
   return measureOnly(percent)
