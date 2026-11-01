@@ -527,7 +527,9 @@ const toItems = (list: unknown, text: string): PlanItem[] | undefined =>
 function nextPlan(tool: string, input: Record<string, unknown>, plan: PlanItem[]): PlanItem[] | undefined {
   if (tool === 'TodoWrite') return toItems(input.todos, 'content')
   if (tool === 'TaskCreate') {
-    return [...plan, { id: String(plan.length + 1), content: String(input.subject ?? ''), status: 'pending' }]
+    // Ids keep counting past a deleted task, so the next one is the highest plus one.
+    const id = plan.reduce((n, p) => Math.max(n, Number(p.id) || 0), 0) + 1
+    return [...plan, { id: String(id), content: String(input.subject ?? ''), status: 'pending' }]
   }
   if (tool === 'TaskUpdate') {
     const id = String(input.taskId ?? '')
@@ -1048,8 +1050,20 @@ async function runGraft($: EngineInterface) {
 const clip = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, Math.max(1, max - 3))}...`
 
-// The repository's name: the last part of origin's URL, else the top folder's name.
+// The last name found, per session folder, so the 5 s poll runs one git, not three.
+let knownRepo: { cwd: string; name: string } | undefined
+
 async function repoName($: EngineInterface) {
+  // At session start the folder may not be known yet: look it up without keeping it.
+  const cwd = await $.session.cwd().catch(() => undefined)
+  if (cwd !== undefined && knownRepo?.cwd === cwd) return knownRepo.name
+  const name = await findRepoName($)
+  if (cwd !== undefined && name) knownRepo = { cwd, name }
+  return name
+}
+
+// The repository's name: the last part of origin's URL, else the top folder's name.
+async function findRepoName($: EngineInterface) {
   const git = (args: string[]) =>
     $.process
       .run(['git', ...args], { timeoutMs: 3_000 })
@@ -1063,7 +1077,9 @@ async function repoName($: EngineInterface) {
 // The repository, branch, ahead/behind and changed files; null outside a repo.
 async function refreshBranch($: EngineInterface) {
   const res = await $.process
-    .run(['git', 'status', '--porcelain=v2', '--branch'], { timeoutMs: 3_000 })
+    // No optional locks: a poll every few seconds must not hold index.lock
+    // while the person commits.
+    .run(['git', '--no-optional-locks', 'status', '--porcelain=v2', '--branch'], { timeoutMs: 3_000 })
     .catch(() => null)
   let next: Branch | null = null
   if (res && res.exitCode === 0) {
@@ -1267,7 +1283,6 @@ async function cancel($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   // The module's own variables: a reload starts them over.
-  let ticker: { cancel: () => void } | undefined
   let agentTimers: Timer[] = []
   const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
   const settings: Settings = {
@@ -1302,13 +1317,17 @@ export const register: Register = (on, options) => {
     await refreshBudget($, settings.budgetUsd, settings.budgetEnforce).catch(() => {})
     for (const t of agentTimers) t.cancel()
     agentTimers = [
-      // Elapsed times tick while a row shows, and a finished row leaves after 30 s.
-      // A subagent's waiting or idle follows the engine's list.
+      // Elapsed times tick while the turn runs or a row shows, and a finished row
+      // leaves after 30 s. A subagent's waiting or idle follows the engine's list.
       $.clock.every(1000, () => {
         void (async () => {
           await syncAgents($).catch(() => {})
           const at = await $.clock.now()
-          if ((await read($, agents)).some(a => isShown(a, at - 3_000))) await update($, now, () => at)
+          const st = (await read($, run)).status
+          const isTurnLive = st === 'running' || st === 'paused'
+          if (isTurnLive || (await read($, agents)).some(a => isShown(a, at - 3_000))) {
+            await update($, now, () => at)
+          }
         })().catch(() => {})
       }),
       $.clock.every(5_000, () => void pollShells($).catch(() => {})),
@@ -1555,8 +1574,10 @@ export const register: Register = (on, options) => {
     const t = await $.clock.now()
     const cost = (await $.session.usage()).cost?.usd ?? 0
     isCancelling = false
-    await update($, run, (): Run => ({
+    await update($, run, (prev): Run => ({
       ...IDLE,
+      // A task list left unfinished carries on, so a later turn's TaskUpdate finds its items.
+      plan: prev.plan.some(p => p.status !== 'completed') ? prev.plan : [],
       status: 'running',
       prompt: trim(e.text, 120),
       turnId: e.turnId,
@@ -1565,10 +1586,6 @@ export const register: Register = (on, options) => {
       cost,
     }))
     await update($, now, () => t)
-    ticker?.cancel()
-    ticker = $.clock.every(1000, () => {
-      void $.clock.now().then(t2 => update($, now, () => t2))
-    })
     await startWorking($, t).catch(() => {})
 
     return next(e)
@@ -1704,8 +1721,6 @@ export const register: Register = (on, options) => {
       return res
     }
 
-    ticker?.cancel()
-    ticker = undefined
     const endedAt = await $.clock.now()
     const cost = (await $.session.usage()).cost?.usd
     const status: RunStatus = isCancelling
@@ -1921,6 +1936,8 @@ export const register: Register = (on, options) => {
     const rows = await read($, agents)
     const pick = await read($, selected)
     const shownRows = rows.filter(a => isShown(a, wall))
+    // With nothing live or just finished, the latest rows stay listed.
+    const listed = shownRows.length > 0 ? shownRows : rows
     const runningRows = rows.filter(isLiveAgent).length
     const spent = rows.reduce((n, a) => n + (a.costUsd ?? 0) + (a.route?.pickerUsd ?? 0), 0)
     const askedTotal = rows.reduce((n, a) => n + (a.askedUsd ?? 0), 0)
@@ -1947,7 +1964,7 @@ export const register: Register = (on, options) => {
           <Text dimColor>
             {`spent ${usdShort(spent)} · at asked models ${usdShort(askedTotal)}${switched ? ` · ${switched} switched` : ''} · picker ${settings.picker}`}
           </Text>
-          {agentTree((shownRows.length > 0 ? shownRows : rows).slice(0, AGENT_ROWS)).map(({ row: a, depth }) => {
+          {agentTree(listed.slice(0, AGENT_ROWS)).map(({ row: a, depth }) => {
             const pad = '  '.repeat(depth)
             const routeText = a.route ? move(a.route, settings.mode) : ''
             const facts = [
@@ -2025,7 +2042,7 @@ export const register: Register = (on, options) => {
               </Box>
             )
           })}
-          {rows.length > AGENT_ROWS && <Text dimColor>{`+${rows.length - AGENT_ROWS} more`}</Text>}
+          {listed.length > AGENT_ROWS && <Text dimColor>{`+${listed.length - AGENT_ROWS} more`}</Text>}
           <Box flexDirection="row" gap={1}>
             <Button key="clear-agents" onPress={clearFinished}>
               Clear finished

@@ -1068,3 +1068,86 @@ test('the 7-day line sums the past six days and today, time and cost', async ($,
   expect((await ui.find({ type: 'Text', text: /^ 2h 30m · / }))?.text).toMatch(/^ 2h 30m · ≈?\$1\.75$/)
   await ui.unmount()
 })
+
+test('a task made after a deleted one gets a fresh id, and an unfinished list carries into the next turn', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  on('tool.call', () => ({ result: {} }))
+  const label = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const text = (await ui.find({ type: 'Text', text: /^ \d+\/\d+ · \d+%$/ }))?.text
+    await ui.unmount()
+    return text
+  }
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'work', turnId: 'turn-t1' })
+  for (const subject of ['a', 'b', 'c']) await $.tool.call({ tool: 'TaskCreate', subject } as any)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'deleted' } as any)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'd' } as any) // task 4, not a second 3
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '3', status: 'completed' } as any)
+  expect(await label()).toBe(' 1/3 · 33%')
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'turn-t1', reason: 'answer' })
+
+  await $.turn.start({ text: 'go on', turnId: 'turn-t2' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '4', status: 'completed' } as any)
+  expect(await label()).toBe(' 2/3 · 67%')
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as any)
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'turn-t2', reason: 'answer' })
+
+  // A finished list does not follow into the next turn.
+  await $.turn.start({ text: 'new work', turnId: 'turn-t3' })
+  expect(await label()).toBeUndefined()
+})
+
+test('+N more counts only the rows that could have been listed', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  const clock = engine(on, state)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: `a${++n}` }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.messages', () => ({ value: [] as any }))
+  const spawn = () =>
+    $.agent.spawn({
+      tool_use_id: `tu${n}`,
+      prompt: 'look',
+      description: `Look ${n + 1}`,
+      subagentType: 'Explore',
+      parentModel: 'claude-opus-5-5',
+      background: false,
+      fork: false,
+    } as any)
+  const more = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const text = (await ui.find({ type: 'Text', text: /^\+\d+ more$/ }))?.text
+    await ui.unmount()
+    return text
+  }
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < 7; i++) await spawn()
+  for (let i = 1; i <= 7; i++) {
+    await $.turn.complete({ agentId: `a${i}`, answer: 'ok', durationMs: 10, isAborted: false, turnId: `t${i}`, reason: 'answer' } as any)
+  }
+  await clock.advance(31_000)
+  expect(await more()).toBe('+1 more') // nothing live: the latest six, one more
+
+  await spawn()
+  expect(await more()).toBeUndefined() // one live row listed, the finished ones hidden
+})
+
+test('the branch poll asks git for status without optional locks', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  const git = gitFor('main')
+  const calls: string[][] = []
+  on('process.run', (_: unknown, e: any) => {
+    calls.push([...e.argv])
+    return { value: git(e.argv) ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  const status = calls.filter(a => a[0] === 'git' && a.includes('status'))
+  expect(status.length).toBeGreaterThan(0)
+  for (const a of status) expect(a.slice(0, 3)).toEqual(['git', '--no-optional-locks', 'status'])
+})
