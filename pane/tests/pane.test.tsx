@@ -183,6 +183,34 @@ test('the 5-hour and weekly windows show their pace and reset times', async ($, 
   await ui.unmount()
 })
 
+test('Usage sits at the top of the pane, above the model, idle and while running', async ($, on) => {
+  const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
+  engine(on, state)
+  on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure({
+    context: {} as any,
+    rateLimits: [{ kind: 'five_hour', percentUsed: 40, resetsAt: '2026-10-31T12:00:00Z' }],
+    changed: ['rateLimits'],
+  })
+  const order = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const texts = (await ui.findAll({ type: 'Text', text: /^(5-hour|Claude Opus 5\.5)$/ })).map(
+      n => n.text,
+    )
+    await ui.unmount()
+    return texts.filter((s, i) => texts.indexOf(s) === i)
+  }
+
+  expect(await order()).toEqual(['5-hour', 'Claude Opus 5.5'])
+
+  await $.turn.start({ text: 'ship it', turnId: 'turn-1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'Listing files' } as any)
+  expect(await order()).toEqual(['5-hour', 'Claude Opus 5.5'])
+})
+
 const measureContext = (state: State, percent: number) => {
   state.pct = percent
   return measureOnly(percent)
