@@ -8,7 +8,7 @@
     {
       "name": "agent-monitor-pane",
       "source": "./pane",
-      "description": "Agent Monitor in a pane beside the chat: run steps, subagents, context, prompt cache, plan usage, worked time, and the git branch above the prompt"
+      "description": "Agent Monitor in a pane beside the chat: run steps, tool failures, subagents, context, prompt cache, plan usage, spend and budget, worked time with a 7-day trend, and the git branch above the prompt"
     }
   ]
 }

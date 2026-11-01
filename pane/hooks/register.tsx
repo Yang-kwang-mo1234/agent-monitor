@@ -3,9 +3,11 @@ import type { AgentStatus, EngineInterface, Register, RenderChildren, Timer } fr
 
 import type {
   AgentRow,
+  Billing,
   Branch,
-  CacheState,
+  Budget,
   CacheTtl,
+  DayTotal,
   GraftUpdate,
   Handoff,
   PlanItem,
@@ -72,6 +74,20 @@ import {
   modelOf,
   outputOf,
 } from './review'
+import {
+  NO_TOOLS,
+  addCall,
+  apiErrorText,
+  asksPerson,
+  billingOf,
+  billingText,
+  errorLine,
+  isAtLeast,
+  isSet,
+  levelOf,
+  slowest,
+} from './spend'
+import type { BillingSetting } from './spend'
 
 const PANE = 'agent-monitor'
 const TITLE = 'Agent Monitor'
@@ -89,7 +105,7 @@ const IDLE: Run = {
 // Change the tag when Run's fields change: it declines what an earlier
 // version stored, which outlives a reload.
 const run = atom({ plugin: 'agent-monitor-pane', key: 'run' } as const, IDLE, {
-  shape: 'run-2',
+  shape: 'run-3',
 })
 const now = atom({ plugin: 'agent-monitor-pane', key: 'now' } as const, 0, {
   shape: 'now-1',
@@ -131,12 +147,30 @@ const handoff = atom(
 const agents = atom(
   { plugin: 'agent-monitor-pane', key: 'agents' } as const,
   [] as AgentRow[],
-  { shape: 'agents-2' },
+  { shape: 'agents-3' },
 )
 const selected = atom(
   { plugin: 'agent-monitor-pane', key: 'selected' } as const,
   null as string | null,
   { shape: 'selected-1' },
+)
+
+// How the session is billed, read once at session start.
+const billing = atom(
+  { plugin: 'agent-monitor-pane', key: 'billing' } as const,
+  { mode: 'unknown', source: 'none' } as Billing,
+  { shape: 'billing-1' },
+)
+const budget = atom(
+  { plugin: 'agent-monitor-pane', key: 'budget' } as const,
+  { level: 'ok', spent: 0, isOverridden: false } as Budget,
+  { shape: 'budget-1' },
+)
+// Every tool call of the session, the main thread's and the subagents'.
+const tools = atom(
+  { plugin: 'agent-monitor-pane', key: 'tools' } as const,
+  NO_TOOLS,
+  { shape: 'tools-1' },
 )
 
 // The Update button's last run, kept so the result stays after a redraw.
@@ -225,8 +259,8 @@ const branch = atom(
 
 const today = atom(
   { plugin: 'agent-monitor-pane', key: 'today' } as const,
-  { date: '', all: [], mine: [], sessions: 0 } as Today,
-  { shape: 'today-2' },
+  { date: '', all: [], mine: [], sessions: 0, week: [], todayUsd: 0 } as Today,
+  { shape: 'today-3' },
 )
 
 // Auto handoff fires once the context window reaches HANDOFF_AT, and arms
@@ -318,6 +352,79 @@ async function detectTtl($: EngineInterface) {
   await $.store.set('ttl', found).catch(() => {})
   await armCache($)
 }
+
+// The main loop's permission mode as of the last prompt.
+let permissionMode: string | undefined
+
+
+// --- spend and budget -----------------------------------------------------
+
+async function detectBilling($: EngineInterface, setting: BillingSetting) {
+  const got = (v: Promise<string | undefined>) => v.then(x => (x ?? '').trim()).catch(() => '')
+  const cloud = await Promise.all([
+    got($.env.get('CLAUDE_CODE_USE_BEDROCK')),
+    got($.env.get('CLAUDE_CODE_USE_VERTEX')),
+    got($.env.get('CLAUDE_CODE_USE_FOUNDRY')),
+  ])
+  const isCloud = cloud.some(isSet)
+  const hasKey = (await got($.env.get('ANTHROPIC_API_KEY'))) !== '' || (await got($.env.get('ANTHROPIC_AUTH_TOKEN'))) !== ''
+  // A login shell, so `claude` is found where the person's own PATH puts it.
+  const res =
+    setting === 'auto' && !isCloud
+      ? await $.process.run(['/bin/zsh', '-lc', 'claude auth status'], { timeoutMs: 15_000 }).catch(() => undefined)
+      : undefined
+  const next = billingOf(setting, res?.exitCode === 0 ? res.stdout : undefined, { isCloud, hasKey })
+  const cur = await read($, billing)
+  if (JSON.stringify(cur) !== JSON.stringify(next)) await update($, billing, () => next)
+}
+
+const LEVEL_TOAST = {
+  warn: (spent: string, limit: string) => `Budget 80%: ${spent} of ${limit} spent.`,
+  degrade: (spent: string, limit: string, enforce: boolean) =>
+    enforce ? `Budget 90% (${spent} of ${limit}): new subagents run on the cheapest model.` : `Budget 90%: ${spent} of ${limit} spent.`,
+  block: (spent: string, limit: string, enforce: boolean) =>
+    enforce ? `Budget ${limit} reached: the next tool call asks first.` : `Budget ${limit} reached: ${spent} spent.`,
+} as const
+
+// The session's cost against the budget; a toast each time it climbs a step.
+async function refreshBudget($: EngineInterface, limit: number, enforce: boolean) {
+  const spent = (await $.session.usage()).cost?.usd
+  if (spent === undefined) return
+  const cur = await read($, budget)
+  const level = levelOf(spent, limit)
+  if (level === cur.level && Math.abs(spent - cur.spent) < 0.0005) return
+  await update($, budget, (b): Budget => ({ ...b, level, spent }))
+  if (level !== 'ok' && !isAtLeast(cur.level, level)) {
+    $.ui.toast(LEVEL_TOAST[level](usdShort(spent), usdShort(limit), enforce))
+  }
+}
+
+// One question at a time, however many calls wait on it.
+let budgetAsk: Promise<boolean> | undefined
+
+// True when the call may run: under the budget, past it by the person's Continue,
+// or not enforced. Without anyone to ask, it stops.
+async function budgetGate($: EngineInterface, limit: number, enforce: boolean) {
+  if (!enforce) return true
+  const b = await read($, budget)
+  if (b.level !== 'block' || b.isOverridden) return true
+  budgetAsk ??= (async () => {
+    const answer = await $.ui
+      .ask(`Agent Monitor: the ${usdShort(limit)} budget is spent (${usdShort(b.spent)}). Keep going?`, {
+        header: 'Budget',
+        options: ['Continue', 'Stop'],
+      })
+      .catch(() => 'Stop')
+    const go = answer === 'Continue'
+    if (go) await update($, budget, (x): Budget => ({ ...x, isOverridden: true }))
+    return go
+  })().finally(() => {
+    budgetAsk = undefined
+  })
+  return budgetAsk
+}
+
+const BUDGET_DENY = 'Stopped by Agent Monitor: the session budget is spent.'
 
 // --- labels ---------------------------
 
@@ -576,6 +683,9 @@ type Settings = {
   gateway: string
   openai: string
   zeroRetention: boolean
+  billing: BillingSetting
+  budgetUsd: number
+  budgetEnforce: boolean
 }
 type Pick = { tier?: Route['picked']; by: Route['by']; confidence?: number; reason: string; pickerUsd?: number }
 type Credential = { via: Via; key: string } | null
@@ -689,6 +799,7 @@ const agentIcon = (a: AgentRow) => AGENT_LOOK[a.status].icon
 const agentColor = (a: AgentRow) => AGENT_LOOK[a.status].color
 
 const RESULT_MAX = 4000
+const TASK_MAX = 600
 const oneLine = (s: string, n: number) => trim(clean(s), n)
 
 // A subagent's own task list as a short bar, `2/4`, and the item it is on; undefined without one.
@@ -704,6 +815,27 @@ function agentPlan(a: AgentRow, cells: number) {
     current: current ? oneLine(current, 48) : '',
   }
 }
+
+// Rows in tree order, each subagent under the one that spawned it, with its depth.
+function agentTree(rows: readonly AgentRow[]) {
+  const ids = new Set(rows.map(a => a.id))
+  const kids = new Map<string, AgentRow[]>()
+  for (const a of rows) {
+    if (a.parentId && ids.has(a.parentId)) kids.set(a.parentId, [...(kids.get(a.parentId) ?? []), a])
+  }
+  const out: { row: AgentRow; depth: number }[] = []
+  const walk = (a: AgentRow, depth: number) => {
+    out.push({ row: a, depth })
+    for (const k of kids.get(a.id) ?? []) walk(k, depth + 1)
+  }
+  for (const a of rows) if (!a.parentId || !ids.has(a.parentId)) walk(a, 0)
+  return out
+}
+
+const usageText = (u: AgentRow['usage']) =>
+  u
+    ? `in ${tokens(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} · out ${tokens(u.output_tokens)} · cache read ${tokens(u.cache_read_input_tokens)}`
+    : ''
 
 // The engine's word for where a loop stands, as a row shows it; ended loops are
 // left to their turn.complete.
@@ -970,6 +1102,8 @@ async function refreshBranch($: EngineInterface) {
 // once counts once. A turn past midnight is split between the two days.
 const WORKED = 'worked:'
 const WORKING = 'working:'
+const SPENT = 'spent:' // spent:<date>:<session>, the USD of that session's turns finished that day
+const WEEK_DAYS = 7
 const KEEP_DAYS = 30
 const BEAT_MS = 15_000 // a running turn's heartbeat, so a crashed session's stops counting
 const STALE_MS = 3 * BEAT_MS
@@ -1031,6 +1165,14 @@ async function addWorked($: EngineInterface, start: number, end: number) {
   await $.store.delete(`${WORKING}${sid}`).catch(() => {})
 }
 
+// Adds a finished turn's cost to the day it ended on.
+async function addSpent($: EngineInterface, end: number, usd: number) {
+  if (!(usd > 0)) return
+  const key = `${SPENT}${localDate(end)}:${await $.session.id()}`
+  const had = await $.store.get(key).catch(() => undefined)
+  await $.store.set(key, (typeof had === 'number' ? had : 0) + usd)
+}
+
 // Today's spans from every session: finished turns, and the turns other sessions
 // are running now (up to their last heartbeat).
 async function refreshToday($: EngineInterface) {
@@ -1044,8 +1186,24 @@ async function refreshToday($: EngineInterface) {
   const all: Span[] = []
   let mine: Span[] = []
   const workers = new Set<string>()
+  // The six days before today, for the trend.
+  const days = Array.from({ length: WEEK_DAYS - 1 }, (_, i) => {
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (WEEK_DAYS - 1 - i))
+    return localDate(day.getTime())
+  })
+  const past = new Map(days.map(x => [x, { spans: [] as Span[], usd: 0 }]))
+  let todayUsd = 0
   for (const key of await $.store.keys()) {
-    if (key.startsWith(prefix)) {
+    if (key.startsWith(SPENT)) {
+      const day = key.slice(SPENT.length, SPENT.length + 10)
+      const v = await $.store.get(key).catch(() => undefined)
+      if (typeof v !== 'number') continue
+      if (day === date) todayUsd += v
+      else if (past.has(day)) past.get(day)!.usd += v
+    } else if (key.startsWith(WORKED) && past.has(key.slice(WORKED.length, WORKED.length + 10))) {
+      const spans = await $.store.get(key).catch(() => undefined)
+      if (isSpans(spans)) past.get(key.slice(WORKED.length, WORKED.length + 10))!.spans.push(...spans)
+    } else if (key.startsWith(prefix)) {
       const spans = await $.store.get(key).catch(() => undefined)
       if (!isSpans(spans) || spans.length === 0) continue
       const owner = key.slice(prefix.length)
@@ -1060,7 +1218,8 @@ async function refreshToday($: EngineInterface) {
       workers.add(key.slice(WORKING.length))
     }
   }
-  const next: Today = { date, all: merge(all.map(clip)), mine: merge(mine), sessions: workers.size }
+  const week: DayTotal[] = days.map(x => ({ date: x, ms: total(past.get(x)!.spans), usd: past.get(x)!.usd }))
+  const next: Today = { date, all: merge(all.map(clip)), mine: merge(mine), sessions: workers.size, week, todayUsd }
   const cur = await read($, today)
   if (JSON.stringify(cur) !== JSON.stringify(next)) await update($, today, () => next)
 }
@@ -1074,6 +1233,11 @@ async function pruneWorked($: EngineInterface) {
     if (key.startsWith(WORKED)) {
       const v = await $.store.get(key).catch(() => undefined)
       if (key.slice(WORKED.length, WORKED.length + 10) < cutoff || !isSpans(v)) {
+        await $.store.delete(key).catch(() => {})
+      }
+    } else if (key.startsWith(SPENT)) {
+      const v = await $.store.get(key).catch(() => undefined)
+      if (key.slice(SPENT.length, SPENT.length + 10) < cutoff || typeof v !== 'number') {
         await $.store.delete(key).catch(() => {})
       }
     } else if (key.startsWith(WORKING)) {
@@ -1116,6 +1280,9 @@ export const register: Register = (on, options) => {
     gateway: text(options.gatewayApiKey),
     openai: text(options.openaiApiKey),
     zeroRetention: options.gatewayZeroRetention === true,
+    billing: options.billing === 'subscription' || options.billing === 'metered' ? options.billing : 'auto',
+    budgetUsd: typeof options.budgetUsd === 'number' && options.budgetUsd > 0 ? options.budgetUsd : 0,
+    budgetEnforce: options.budgetEnforce === true,
   }
 
   on('session.start', async ($, e, next) => {
@@ -1131,6 +1298,8 @@ export const register: Register = (on, options) => {
     await refreshContext($).catch(() => {})
     await armCache($).catch(() => {})
     void checkRelease($).catch(() => {})
+    void detectBilling($, settings.billing).catch(() => {})
+    await refreshBudget($, settings.budgetUsd, settings.budgetEnforce).catch(() => {})
     for (const t of agentTimers) t.cancel()
     agentTimers = [
       // Elapsed times tick while a row shows, and a finished row leaves after 30 s.
@@ -1167,14 +1336,21 @@ export const register: Register = (on, options) => {
     if (e.fork) return next(e) // a fork runs on its parent's model
     const asked = baseline(e)
     const named = settings.respectNamed && !!e.model && e.model !== 'inherit'
-    const pick: Pick = named
-      ? { by: 'none', reason: 'named by the caller, kept' }
-      : await credential($, settings)
-          .then(c => decide($, e, c, settings))
-          .catch(() => ({ by: 'none' as const, reason: 'picker failed, kept' }))
+    // Past 90% of an enforced budget every new subagent runs on the cheapest model.
+    const cheapest = LADDERS[settings.ladder][0]!
+    const isDegraded =
+      settings.budgetEnforce && isAtLeast((await read($, budget)).level, 'degrade') && tierOf(asked ?? '') !== cheapest
+    const pick: Pick = isDegraded
+      ? { tier: cheapest, by: 'none', reason: 'budget past 90%, cheapest model' }
+      : named
+        ? { by: 'none', reason: 'named by the caller, kept' }
+        : await credential($, settings)
+            .then(c => decide($, e, c, settings))
+            .catch(() => ({ by: 'none' as const, reason: 'picker failed, kept' }))
     const sure = pick.confidence === undefined || pick.confidence >= MIN_CONFIDENCE
     const apply =
-      settings.mode === 'auto' && sure && !!pick.tier && asked !== undefined && pick.tier !== tierOf(asked)
+      isDegraded ||
+      (settings.mode === 'auto' && sure && !!pick.tier && asked !== undefined && pick.tier !== tierOf(asked))
     const res = await next(apply ? { ...e, model: pick.tier } : e)
     if (res.deny !== undefined || !res.agentId) return res
     const id = res.agentId
@@ -1188,6 +1364,8 @@ export const register: Register = (on, options) => {
       tools: 0,
       last: 'starting',
       model: res.model,
+      parentId: e.parentAgentId,
+      task: trim(e.prompt, TASK_MAX),
       review: isReviewAgent(e.description ?? '')
         ? { model: e.model || res.model || 'inherit', label: e.description }
         : undefined,
@@ -1269,6 +1447,34 @@ export const register: Register = (on, options) => {
     return res
   })
 
+  // The permission mode rides on each prompt's classic hook input.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (e.permission_mode) permissionMode = e.permission_mode
+    return next(e)
+  })
+
+  // A main-thread call the check puts to the person: its step reads "asked for approval"
+  // until it ends (approved and run, or refused).
+  on('tool.check', async ($, e, next) => {
+    const v = await next(e)
+    const id = e.tool_use_id
+    if (id !== undefined && e.agentId === undefined && asksPerson(v.decision, e.approver, permissionMode)) {
+      const at = await $.clock.now()
+      await update($, run, r =>
+        r.steps.some(s => s.id === id && s.endedAt === undefined)
+          ? { ...r, steps: r.steps.map(s => (s.id === id ? { ...s, askedAt: at } : s)) }
+          : r,
+      )
+    }
+    return v
+  })
+
+  // The kind of API error that ended the main thread's turn, for the run card.
+  on('classic.StopFailure', async ($, e, next) => {
+    if (e.agent_id === undefined) await update($, run, (r): Run => ({ ...r, apiError: e.error }))
+    return next(e)
+  })
+
   // A /compact empties the window without a turn ending.
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
@@ -1303,6 +1509,7 @@ export const register: Register = (on, options) => {
 
   // Pushed after each main-thread turn and whenever a window moves a point.
   on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('cost')) await refreshBudget($, settings.budgetUsd, settings.budgetEnforce).catch(() => {})
     if (e.changed.includes('rateLimits')) {
       await update($, limits, () => toLimits(e.rateLimits))
     }
@@ -1372,10 +1579,24 @@ export const register: Register = (on, options) => {
       const id = e.agentId
       const input = e as unknown as Record<string, unknown>
       const line = agentStep(input)
+      if (!(await budgetGate($, settings.budgetUsd, settings.budgetEnforce))) return { deny: BUDGET_DENY }
       await update($, agents, list =>
         list.map(a => (a.id === id ? { ...a, tools: a.tools + 1, last: line } : a)),
       )
+      const began = await $.clock.now()
       const ran = await next(e)
+      const at = await $.clock.now()
+      const failed = ran.deny !== undefined || ran.isError === true
+      await update($, tools, log =>
+        addCall(log, {
+          tool: e.tool,
+          ms: at - began,
+          failure: failed ? { label: line, error: errorLine(ran), at, ms: at - began } : undefined,
+        }),
+      )
+      if (failed) {
+        await update($, agents, list => list.map(a => (a.id === id ? { ...a, fails: (a.fails ?? 0) + 1 } : a)))
+      }
       // Its own task list, kept on its row like the main run's.
       if (ran.deny === undefined && ran.isError !== true && nextPlan(e.tool, input, []) !== undefined) {
         await update($, agents, list =>
@@ -1404,6 +1625,10 @@ export const register: Register = (on, options) => {
         return { deny: 'Cancelled from Agent Monitor.' }
       }
     }
+    if (!(await budgetGate($, settings.budgetUsd, settings.budgetEnforce))) {
+      await cancel($)
+      return { deny: BUDGET_DENY }
+    }
 
     const { label, source } = describe(
       e.tool,
@@ -1421,13 +1646,19 @@ export const register: Register = (on, options) => {
 
     const endedAt = await $.clock.now()
     const ok = ran.deny === undefined && ran.isError !== true
+    const error = ok ? undefined : errorLine(ran)
     const cost = (await $.session.usage()).cost?.usd
+    const ms = endedAt - step.startedAt
+    await update($, tools, log =>
+      addCall(log, { tool: e.tool, ms, failure: error ? { label, error, at: endedAt, ms } : undefined }),
+    )
     await update($, run, r => ({
       ...r,
       cost: cost ?? r.cost,
-      steps: r.steps.map(s => (s.id === step.id ? { ...s, endedAt, ok } : s)),
+      steps: r.steps.map(s => (s.id === step.id ? { ...s, endedAt, ok, error } : s)),
       plan: (ok && nextPlan(e.tool, e as unknown as Record<string, unknown>, r.plan)) || r.plan,
     }))
+    await refreshBudget($, settings.budgetUsd, settings.budgetEnforce).catch(() => {})
 
     return ran
   })
@@ -1469,6 +1700,7 @@ export const register: Register = (on, options) => {
           `${failed ? '✗' : '✓'} ${one.description} ${failed ? 'failed' : 'done'} (${agentElapsed(one, at)} · ${one.tools} tools)`,
         )
       }
+      await refreshBudget($, settings.budgetUsd, settings.budgetEnforce).catch(() => {})
       return res
     }
 
@@ -1499,11 +1731,14 @@ export const register: Register = (on, options) => {
     )
     await update($, now, () => endedAt)
     await addWorked($, endedAt - e.durationMs, endedAt).catch(() => {})
+    const ran = await read($, run)
+    if (ran.turnId === e.turnId) await addSpent($, endedAt, ran.cost - ran.costAtStart).catch(() => {})
     await refreshToday($).catch(() => {})
     await recordTurn($).catch(() => {})
     await refreshBranch($).catch(() => {})
     await refreshContext($).catch(() => {})
     await detectTtl($).catch(() => {})
+    await refreshBudget($, settings.budgetUsd, settings.budgetEnforce).catch(() => {})
 
     return next(e)
   })
@@ -1576,6 +1811,7 @@ export const register: Register = (on, options) => {
       void update($, run, x => ({ ...x, isPauseRequested: !x.isPauseRequested }))
     const cancelNow = () => void cancel($)
 
+    const bill = await read($, billing)
     const rd = await read($, reading)
     const turns = await read($, history)
     const ho = await read($, handoff)
@@ -1711,7 +1947,8 @@ export const register: Register = (on, options) => {
           <Text dimColor>
             {`spent ${usdShort(spent)} · at asked models ${usdShort(askedTotal)}${switched ? ` · ${switched} switched` : ''} · picker ${settings.picker}`}
           </Text>
-          {(shownRows.length > 0 ? shownRows : rows).slice(0, AGENT_ROWS).map(a => {
+          {agentTree((shownRows.length > 0 ? shownRows : rows).slice(0, AGENT_ROWS)).map(({ row: a, depth }) => {
+            const pad = '  '.repeat(depth)
             const routeText = a.route ? move(a.route, settings.mode) : ''
             const facts = [
               a.review ? 'review' : a.kind === 'agent' ? 'sub' : 'sh',
@@ -1719,6 +1956,7 @@ export const register: Register = (on, options) => {
               a.review?.findings ? findingsText(a.review.findings) : '',
               routeText,
               a.kind === 'agent' ? `${a.tools} tools` : '',
+              a.fails ? `${a.fails} failed` : '',
               a.kind === 'agent' && (a.status === 'done' || a.status === 'failed') ? usdShort(a.costUsd) : '',
               a.status === 'waiting' || a.status === 'idle' ? a.status : '',
               a.status !== 'done' ? a.last : '',
@@ -1731,18 +1969,18 @@ export const register: Register = (on, options) => {
             return (
               <Box key={a.id} flexDirection="column">
                 <Button key={`agent-${a.id}`} plain onPress={toggleRow(a.id)}>
-                  <Text color={agentColor(a)} weight="semibold">{`${agentIcon(a)} ${a.description}`}</Text>
+                  <Text color={agentColor(a)} weight="semibold">{`${pad}${depth > 0 ? '└ ' : ''}${agentIcon(a)} ${a.description}`}</Text>
                   <Text dimColor>{`${a.model ? ` (${modelName(a.model)})` : ''}  ${agentElapsed(a, wall)}`}</Text>
                 </Button>
-                <Text dimColor>{`  ${facts.join(' · ')}`}</Text>
+                <Text dimColor>{`${pad}  ${facts.join(' · ')}`}</Text>
                 {pl && (
                   <Text mono>
-                    {'  '}
+                    {`${pad}  `}
                     <Text color={agentColor(a)}>{pl.bar}</Text>
                     <Text dimColor>{` ${pl.label}${pl.current ? ` · ${pl.current}` : ''}`}</Text>
                   </Text>
                 )}
-                {a.result && !isOpen && <Text dimColor>{`  ↳ ${oneLine(a.result, Math.max(20, width - 4))}`}</Text>}
+                {a.result && !isOpen && <Text dimColor>{`${pad}  ↳ ${oneLine(a.result, Math.max(20, width - 4 - pad.length))}`}</Text>}
                 {isOpen && a.kind === 'shell' && (
                   <Box flexDirection="column">
                     <Text dimColor mono>{`  $ ${clean(a.detail ?? '')}`}</Text>
@@ -1755,6 +1993,13 @@ export const register: Register = (on, options) => {
                 {isOpen && a.kind === 'agent' && (
                   <Box flexDirection="column">
                     {a.route && <Text dimColor>{`  ${a.type} · ${a.route.reason}`}</Text>}
+                    {a.task && (
+                      <Text>
+                        <Text weight="semibold">{'  given: '}</Text>
+                        <Text dimColor>{clean(a.task)}</Text>
+                      </Text>
+                    )}
+                    {a.usage && <Text dimColor>{`  ${usageText(a.usage)}`}</Text>}
                     {openedMessages.length === 0 && !a.result && <Text dimColor>{'  No messages yet.'}</Text>}
                     {(a.plan ?? []).map(p => (
                       <Text dimColor={p.status === 'completed'}>
@@ -1804,6 +2049,9 @@ export const register: Register = (on, options) => {
     const workedMs = total([...day.all, ...live])
     const mineMs = total([...day.mine, ...live])
     const others = day.sessions - (day.mine.length > 0 ? 1 : 0)
+    // The six days before today, then today, live.
+    const weekMs = [...day.week.map(x => x.ms), workedMs]
+    const weekUsd = day.week.reduce((n, x) => n + x.usd, 0) + day.todayUsd + (isLive ? r.cost - r.costAtStart : 0)
     const su = await read($, selfUpdate)
     const rel = await read($, release)
     // The agent's progress at the bottom left; hidden before the first turn.
@@ -1866,6 +2114,15 @@ export const register: Register = (on, options) => {
         <Text dimColor>
           {`this session ${hoursMinutes(mineMs)}${others > 0 ? ` · ${others} other session${others === 1 ? '' : 's'}, overlap counted once` : ''}`}
         </Text>
+        {weekMs.some(ms => ms > 0) && (
+          <Text>
+            <Text dimColor>{'7 days '}</Text>
+            <Text color="cyan">{sparkline(weekMs)}</Text>
+            <Text dimColor>
+              {` ${hoursMinutes(weekMs.reduce((n, ms) => n + ms, 0))} · ${bill.mode === 'subscription' ? '≈' : ''}${usdShort(weekUsd)}`}
+            </Text>
+          </Text>
+        )}
       </Box>
     )
     const usage = (
@@ -1913,30 +2170,98 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    const bud = await read($, budget)
+    const limit = settings.budgetUsd
+    const budShare = limit > 0 ? bud.spent / limit : 0
+    const budColor = bud.level === 'block' ? 'error' : bud.level === 'ok' ? 'success' : 'warning'
+    const budCells = Math.round(Math.min(1, budShare) * limitCells)
+    const spendView = (
+      <Box flexDirection="column">
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text weight="medium">Spend</Text>
+          <Text mono weight="bold">
+            {`${bill.mode === 'subscription' ? '≈' : ''}${usd(bud.spent)}`}
+          </Text>
+        </Box>
+        <Text dimColor>{billingText(bill)}</Text>
+        {limit > 0 && (
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text mono>
+              <Text color={budColor}>{'█'.repeat(budCells)}</Text>
+              <Text dimColor>{'░'.repeat(limitCells - budCells)}</Text>
+            </Text>
+            <Text mono color={budColor}>{`${Math.round(budShare * 100)}% of ${usdShort(limit)}`}</Text>
+          </Box>
+        )}
+        {limit > 0 && (
+          <Text dimColor>
+            {settings.budgetEnforce
+              ? bud.isOverridden
+                ? 'Enforced · kept going past the budget'
+                : 'Enforced · cheapest subagents at 90% · asks at 100%'
+              : 'Warn only · turn on Enforce budget in /config'}
+          </Text>
+        )}
+      </Box>
+    )
+
+    const log = await read($, tools)
+    const calls = Object.values(log.byTool).reduce((n, x) => n + x.calls, 0)
+    const fails = Object.values(log.byTool).reduce((n, x) => n + x.fails, 0)
+    const top = slowest(log, 3)
+    const toolsView =
+      calls === 0 ? null : (
+        <Box flexDirection="column">
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text weight="medium">Tools</Text>
+            <Text dimColor>
+              {`${calls} calls · `}
+              <Text color={fails ? 'error' : 'success'}>{`${fails} failed`}</Text>
+            </Text>
+          </Box>
+          <Text dimColor>
+            {top.map(([name, x]) => `${oneLine(name, 18)} ${x.calls}× ${secs(x.ms)}${x.fails ? ` (${x.fails}✗)` : ''}`).join(' · ')}
+          </Text>
+          {log.failures
+            .slice(-3)
+            .reverse()
+            .map(f => (
+              <Text key={`fail-${f.at}-${f.tool}`}>
+                <Text color="error">{`✗ ${oneLine(f.label, 32)}`}</Text>
+                <Text dimColor>{` ${oneLine(f.error, Math.max(16, width - 36))}`}</Text>
+              </Text>
+            ))}
+        </Box>
+      )
+
     if (r.status === 'idle') {
       return page(
-        <>
+        <Box flexDirection="column" gap={1}>
           <Text weight="semibold">{model}</Text>
           <Text dimColor>Waiting for the next prompt.</Text>
+          {toolsView}
           {agentsView}
           {contextView}
           {cacheView}
           {usage}
+          {spendView}
           {todayView}
-        </>,
+        </Box>,
       )
     }
 
     return page(
-      <>
+      <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" justifyContent="space-between">
           <Text weight="semibold">{model}</Text>
           <Box flexDirection="row" gap={1}>
-            <Text mono>{usd(r.cost - r.costAtStart)}</Text>
+            <Text mono>{`${bill.mode === 'subscription' ? '≈' : ''}${usd(r.cost - r.costAtStart)}`}</Text>
             <Text color={status.color} weight="medium">
               {r.isPauseRequested && r.status === 'running'
                 ? 'Pausing…'
-                : status.text}
+                : r.status === 'failed' && r.apiError
+                  ? `${status.text} · ${apiErrorText(r.apiError)}`
+                  : status.text}
             </Text>
           </Box>
         </Box>
@@ -1944,7 +2269,9 @@ export const register: Register = (on, options) => {
 
         <Box flexDirection="row" justifyContent="space-between">
           <Text weight="medium">
-            {open
+            {open?.askedAt !== undefined
+              ? `Asked for approval · ${open.label}`
+              : open
               ? open.label
               : isLive
                 ? 'Thinking…'
@@ -1989,6 +2316,9 @@ export const register: Register = (on, options) => {
               </Text>
             </Box>
           ))}
+          {recent.filter(s => s.error).slice(0, 1).map(s => (
+            <Text key={`${s.id}-error`} color="error" dimColor>{`  ${oneLine(s.error ?? '', Math.max(20, width - 2))}`}</Text>
+          ))}
         </Box>
 
         <Box flexDirection="row" justifyContent="space-between">
@@ -2004,12 +2334,14 @@ export const register: Register = (on, options) => {
             {done.length}/{r.steps.length}
           </Text>
         </Box>
+        {toolsView}
         {agentsView}
         {contextView}
         {cacheView}
         {usage}
+        {spendView}
         {todayView}
-      </>,
+      </Box>,
     )
   })
 }

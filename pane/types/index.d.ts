@@ -5,6 +5,8 @@ export type Step = {
   startedAt: number
   endedAt?: number
   ok?: boolean
+  error?: string // why it failed, one line
+  askedAt?: number // when the permission check put it to the person
 }
 
 // One item of the agent's own task list (TodoWrite, TaskCreate/Update, the app's plan).
@@ -34,6 +36,7 @@ export type Run = {
   isPauseRequested: boolean
   steps: Step[]
   plan: PlanItem[]
+  apiError?: string // the kind of API error that ended the turn (rate_limit, overloaded, ...)
 }
 
 export type RateLimit = {
@@ -125,6 +128,9 @@ export type AgentRow = {
   review?: ReviewInfo // review-watch: a codex review command or a review subagent
   plan?: PlanItem[] // a subagent's own task list, from its TodoWrite or Task calls
   result?: string // a subagent's final answer, cut short
+  parentId?: string // the subagent that spawned this one; absent when the main thread did
+  task?: string // the prompt it was given, cut short
+  fails?: number // its tool calls that failed
 }
 
 export type ReviewInfo = {
@@ -153,6 +159,15 @@ export type Today = {
   all: Span[] // every session's finished turns and other sessions' running ones, merged
   mine: Span[] // this session's finished turns, merged
   sessions: number // sessions that worked today
+  week: DayTotal[] // the six days before today, oldest first
+  todayUsd: number // the cost of today's finished turns, every session
+}
+
+// One day of the 7-day trend: time worked (overlap counted once) and what it cost.
+export type DayTotal = {
+  date: string
+  ms: number
+  usd: number
 }
 
 // This pane's version and the marketplace's newest; either is absent until read.
@@ -175,6 +190,38 @@ export type GraftUpdate = {
   message?: string
 }
 
+// How the session is billed: a subscription's tokens are not spend, an API key's are.
+export type Billing = {
+  mode: 'subscription' | 'metered' | 'unknown'
+  plan?: string // the subscription (pro, max), or what meters it (API key, bedrock)
+  source: 'setting' | 'auth' | 'env' | 'none'
+}
+
+// The token budget: ok, warn at 80%, cheaper subagents at 90%, ask before each step at 100%.
+export type BudgetLevel = 'ok' | 'warn' | 'degrade' | 'block'
+
+export type Budget = {
+  level: BudgetLevel
+  spent: number // the session's cost so far, USD
+  isOverridden: boolean // the person chose to keep going past the budget
+}
+
+// The session's tool calls: count, failures and time per tool, and the latest failures.
+export type ToolStat = { calls: number; fails: number; ms: number }
+
+export type ToolFailure = {
+  tool: string
+  label: string
+  error: string
+  at: number
+  ms: number
+}
+
+export type ToolLog = {
+  byTool: Record<string, ToolStat>
+  failures: ToolFailure[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-monitor-pane': {
@@ -194,6 +241,9 @@ declare module 'claude-code' {
       selfUpdate: Shaped<SelfUpdate>
       graftUpdate: Shaped<GraftUpdate>
       hasGraph: Shaped<boolean>
+      billing: Shaped<Billing>
+      budget: Shaped<Budget>
+      tools: Shaped<ToolLog>
     }
   }
 }

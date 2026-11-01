@@ -45,17 +45,6 @@ function titleOf(command: string) {
   return m ? (m[2] ?? m[3] ?? '') : ''
 }
 
-// What finds this review's process in ps: its arguments as ps prints them (quotes gone).
-export function keyOf(command: string) {
-  const m = CODEX_REVIEW.exec(command)
-  if (!m) return 'codex review'
-  const rest = command.slice(m.index + m[0].search(/codex(?:-companion\.mjs["']?)?\s/))
-  // Up to the first redirect or the next command, past a quoted title.
-  const masked = rest.replace(TITLE, x => x.replace(/[;&|<>]/g, '_'))
-  const cut = masked.search(/\s(?:\d?>|&>)|\s*(?:&&|\|\||;|\|)/)
-  return plain(cut >= 0 ? rest.slice(0, cut) : rest)
-}
-
 // The file the review's stdout goes to (`> file`): `~` from HOME, a relative one from a `cd` before it or the session's folder.
 export function outputOf(command: string, cwd: string, home = '') {
   const at = Math.max(0, command.search(CODEX_REVIEW))
@@ -90,10 +79,5 @@ export function findingsOf(text: string): string[] | undefined {
 export function findingsText(findings: string[]) {
   if (findings.length === 0) return 'no findings'
   return `${findings.length} finding${findings.length === 1 ? '' : 's'} (${findings.join(', ')})`
-}
-
-// A command line as ps prints it: no quotes, single spaces.
-function plain(text: string) {
-  return text.replace(/["']/g, '').replace(/\s+/g, ' ').trim()
 }
 

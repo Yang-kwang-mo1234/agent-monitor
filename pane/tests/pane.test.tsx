@@ -62,7 +62,7 @@ const engine = (on: any, state: State) => {
   return clock
 }
 
-test('a run shows its steps, cost and status', async ($, on) => {
+test('a run shows its steps, cost and status', { options: { billing: 'metered' } }, async ($, on) => {
   const state: State = { t: 1_000, usd: 0.012, aborted: [] as string[] }
   engine(on, state)
   on('tool.call', () => {
@@ -832,4 +832,187 @@ test('Graft Init builds the first graph with graphify update . and then turns in
   expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeTruthy()
   expect(await band.find({ type: 'Button', key: 'graft-init' })).toBeFalsy()
   await band.unmount()
+})
+
+const spawn = (agentId: string, extra: Record<string, unknown> = {}) =>
+  ({
+    tool_use_id: `tu-${agentId}`,
+    prompt: `task for ${agentId}`,
+    description: `Agent ${agentId}`,
+    subagentType: 'general-purpose',
+    parentModel: 'claude-opus-5-5',
+    background: false,
+    fork: false,
+    ...extra,
+  }) as any
+
+test('a failed tool call shows its error under the step and in Tools', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  on('tool.call', (_: unknown, e: any) =>
+    e.command === 'npm test' ? { result: {}, isError: true, text: '\nExit code 1\n2 tests failed' } : { result: {} },
+  )
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'test it', turnId: 'turn-t' })
+  await $.tool.call({ tool: 'Read', file_path: '/a/b.ts' } as any)
+  await $.tool.call({ tool: 'Bash', command: 'npm test', description: 'Running tests' } as any)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^✗ Running tests$/ }))?.text).toBe('✗ Running tests')
+  expect((await ui.find({ type: 'Text', text: /^ {2}Exit code 1$/ }))?.text).toBe('  Exit code 1')
+  expect((await ui.find({ type: 'Text', text: /^2 calls/ }))?.text).toBe('2 calls · 1 failed')
+  expect((await ui.find({ type: 'Text', text: /Bash 1× .*\(1✗\)/ }))).toBeDefined()
+  await ui.unmount()
+})
+
+test('billing from the setting: a subscription marks costs as estimates', { options: { billing: 'subscription' } }, async ($, on) => {
+  const state: State = { t: 1_000, usd: 0.5, aborted: [] }
+  engine(on, state)
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^Subscription/ }))?.text).toBe(
+    'Subscription · API-price estimate, not charged',
+  )
+  expect((await ui.find({ type: 'Text', text: /^≈\$0\.500$/ }))?.text).toBe('≈$0.500')
+  await ui.unmount()
+})
+
+test(
+  'an enforced budget warns, then runs new subagents on the cheapest model, then asks before a step',
+  { options: { billing: 'metered', budgetUsd: 1, budgetEnforce: true } },
+  async ($, on) => {
+    const state: State = { t: 1_000, usd: 0.5, aborted: [] }
+    engine(on, state)
+    const toasts: string[] = []
+    on('ui.toast', (_: unknown, e: any) => {
+      toasts.push(e.text)
+      return { value: undefined }
+    })
+    const spawned: (string | undefined)[] = []
+    on('agent.spawn', (_: unknown, e: any) => {
+      spawned.push(e.model)
+      return { model: e.model ?? 'claude-opus-5-5', agentId: `a${spawned.length}` }
+    })
+    let answer = 'Stop'
+    const asked: string[] = []
+    on('tool.call', (_: unknown, e: any) => {
+      if (e.tool !== 'AskUserQuestion') return { result: {} }
+      asked.push(e.questions[0].question)
+      return { result: { questions: e.questions, answers: { [e.questions[0].question]: answer } } }
+    })
+
+    await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+    await $.turn.start({ text: 'work', turnId: 'turn-g' })
+
+    state.usd = 0.85
+    await $.tool.call({ tool: 'Read', file_path: '/x' } as any)
+    expect(toasts.at(-1)).toBe('Budget 80%: $0.85 of $1.00 spent.')
+
+    state.usd = 0.95
+    await $.tool.call({ tool: 'Read', file_path: '/y' } as any)
+    expect(toasts.at(-1)).toContain('Budget 90%')
+    await $.agent.spawn(spawn('1'))
+    expect(spawned).toEqual(['haiku'])
+
+    state.usd = 1.02
+    await $.tool.call({ tool: 'Read', file_path: '/z' } as any)
+    expect(toasts.at(-1)).toBe('Budget $1.00 reached: the next tool call asks first.')
+    const stopped = await $.tool.call({ tool: 'Read', file_path: '/w' } as any)
+    expect(stopped.deny).toBe('Stopped by Agent Monitor: the session budget is spent.')
+    expect(state.aborted).toEqual(['turn-g'])
+
+    answer = 'Continue'
+    const went = await $.tool.call({ tool: 'Read', file_path: '/v' } as any)
+    expect(went.deny).toBeUndefined()
+    await $.tool.call({ tool: 'Read', file_path: '/u' } as any)
+    expect(asked.length).toBe(2) // once Stop, once Continue, then no more
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect((await ui.find({ type: 'Text', text: /% of \$1\.00$/ }))?.text).toBe('102% of $1.00')
+    expect((await ui.find({ type: 'Text', text: /^Enforced/ }))?.text).toBe('Enforced · kept going past the budget')
+    await ui.unmount()
+  },
+)
+
+test('a budget without Enforce only warns', { options: { billing: 'metered', budgetUsd: 1 } }, async ($, on) => {
+  const state: State = { t: 1_000, usd: 2, aborted: [] }
+  engine(on, state)
+  on('ui.toast', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'work', turnId: 'turn-w' })
+  const ran = await $.tool.call({ tool: 'Read', file_path: '/x' } as any)
+  expect(ran.deny).toBeUndefined()
+})
+
+test('a subagent spawned by a subagent sits under it, and opens to the task it was given', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  on('agent.spawn', (_: unknown, e: any) => ({ model: 'claude-sonnet-5-5', agentId: e.description === 'Agent p' ? 'p' : 'c' }))
+  on('tool.call', () => ({ result: {} }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.messages', () => ({ value: [] as any }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'plan', turnId: 'turn-n' })
+  await $.agent.spawn(spawn('p'))
+  await $.agent.spawn(spawn('c', { parentAgentId: 'p' }))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const names = (await ui.findAll({ type: 'Text', text: /Agent [pc]$/ })).map(n => n.text)
+  expect(names).toEqual(['● Agent p', '  └ ● Agent c'])
+  await ui.press({ plugin: 'agent-monitor-pane', key: 'agent-c' })
+  await ui.unmount()
+  const open = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await open.find({ type: 'Text', text: /^task for c$/ }))?.text).toBe('task for c')
+  await open.unmount()
+})
+
+test('a turn an API error ended says which error', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  on('classic.StopFailure', () => ({}))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'job', turnId: 'turn-e' })
+  await $.classic.StopFailure({ error: 'rate_limit' } as any)
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'turn-e', reason: 'error' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^Failed/ }))?.text).toBe('Failed · rate limited')
+  await ui.unmount()
+})
+
+test('the 7-day line sums the past six days and today, time and cost', async ($, on) => {
+  const noon = new Date(2026, 9, 31, 12, 0, 0).getTime()
+  const day = 86_400_000
+  const hour = 3_600_000
+  const state: State = { t: noon, usd: 1, aborted: [] }
+  engine(on, state)
+  on('session.id', () => ({ value: 'me' }))
+  const store = new Map<string, unknown>([
+    [`worked:${ymd(noon - 2 * day)}:a`, [[noon - 2 * day, noon - 2 * day + hour]]],
+    [`worked:${ymd(noon - 2 * day)}:b`, [[noon - 2 * day + hour / 2, noon - 2 * day + 2 * hour]]], // overlaps a by 30m
+    [`spent:${ymd(noon - day)}:a`, 1.5],
+    [`worked:${ymd(noon - 9 * day)}:old`, [[noon - 9 * day, noon - 9 * day + hour]]], // outside the week
+  ])
+  on('store.get', (_: unknown, e: any) => ({ value: store.get(e.key) }))
+  on('store.set', (_: unknown, e: any) => (store.set(e.key, e.value), { value: undefined }))
+  on('store.delete', (_: unknown, e: any) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'work', turnId: 'turn-7' })
+  state.usd = 1.25
+  state.t = noon + 30 * 60_000
+  await $.turn.complete({ answer: '', durationMs: 30 * 60_000, isAborted: false, turnId: 'turn-7', reason: 'answer' })
+  expect(store.get(`spent:${ymd(noon)}:me`)).toBe(0.25)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // 2h (overlap once) two days ago + 30m today; $1.50 yesterday + $0.25 today.
+  expect((await ui.find({ type: 'Text', text: /^ 2h 30m · / }))?.text).toMatch(/^ 2h 30m · ≈?\$1\.75$/)
+  await ui.unmount()
 })

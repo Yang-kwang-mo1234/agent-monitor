@@ -1,7 +1,7 @@
 {
   "name": "agent-monitor-pane",
-  "version": "0.2.8",
-  "description": "Agent Monitor in a pane beside the chat: run steps, context, prompt cache, plan usage, subagents and background shells with Switchboard model routing",
+  "version": "0.3.0",
+  "description": "Agent Monitor in a pane beside the chat: run steps, tool failures, context, prompt cache, plan usage, spend and budget, subagents and background shells with Switchboard model routing",
   "author": {
     "name": "Yang-kwang-mo1234",
     "url": "https://github.com/Yang-kwang-mo1234"
@@ -81,6 +81,29 @@
       "description": "For picker openai. Empty uses OPENAI_API_KEY.",
       "sensitive": true,
       "default": ""
+    },
+    "billing": {
+      "type": "string",
+      "title": "Billing",
+      "description": "auto (default) reads `claude auth status` at session start: a claude.ai login is a subscription, whose costs are API-price estimates and not charged; an API key or a cloud provider is metered. Pick subscription or metered when auto guesses wrong, such as a subscription billed for extra usage.",
+      "options": [
+        "auto",
+        "subscription",
+        "metered"
+      ],
+      "default": "auto"
+    },
+    "budgetUsd": {
+      "type": "number",
+      "title": "Budget (USD)",
+      "description": "A cost budget for one session, in US dollars. 0 (default) sets none. At 80% a toast warns; at 90% new subagents run on the cheapest model; at 100% the next tool call asks whether to keep going. The last two need Enforce budget on.",
+      "default": 0
+    },
+    "budgetEnforce": {
+      "type": "boolean",
+      "title": "Enforce budget",
+      "description": "Off (default): the budget only warns. On: at 90% new subagents run on the cheapest model of Models, and at 100% each tool call waits for your Continue or Stop.",
+      "default": false
     }
   }
 }
