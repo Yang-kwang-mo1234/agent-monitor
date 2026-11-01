@@ -7,6 +7,7 @@ import type {
   CacheState,
   CacheTtl,
   Handoff,
+  PlanItem,
   RateLimit,
   Reading,
   Release,
@@ -82,11 +83,12 @@ const IDLE: Run = {
   cost: 0,
   isPauseRequested: false,
   steps: [],
+  plan: [],
 }
 // Change the tag when Run's fields change: it declines what an earlier
 // version stored, which outlives a reload.
 const run = atom({ plugin: 'agent-monitor-pane', key: 'run' } as const, IDLE, {
-  shape: 'run-1',
+  shape: 'run-2',
 })
 const now = atom({ plugin: 'agent-monitor-pane', key: 'now' } as const, 0, {
   shape: 'now-1',
@@ -396,6 +398,83 @@ function describe(tool: string, input: Record<string, unknown>) {
       return { label: `Using the ${input.skill ?? 'a'} skill`, source: 'Skill' }
     default:
       return { label: humanize(tool), source: tool }
+  }
+}
+
+// --- progress ---------------------------------------------------------------
+
+const PLAN_STATUSES = ['pending', 'in_progress', 'completed'] as const
+const planStatus = (v: unknown): PlanItem['status'] =>
+  PLAN_STATUSES.find(x => x === v) ?? 'pending'
+const toItems = (list: unknown, text: string): PlanItem[] | undefined =>
+  Array.isArray(list)
+    ? list.map((x: Record<string, unknown>, i) => ({
+        id: String(i + 1),
+        content: String(x?.[text] ?? ''),
+        status: planStatus(x?.status),
+      }))
+    : undefined
+
+// The task list after a call to one of the plan tools; undefined for any other tool.
+function nextPlan(tool: string, input: Record<string, unknown>, plan: PlanItem[]): PlanItem[] | undefined {
+  if (tool === 'TodoWrite') return toItems(input.todos, 'content')
+  if (tool === 'TaskCreate') {
+    return [...plan, { id: String(plan.length + 1), content: String(input.subject ?? ''), status: 'pending' }]
+  }
+  if (tool === 'TaskUpdate') {
+    const id = String(input.taskId ?? '')
+    if (input.status === 'deleted') return plan.filter(p => p.id !== id)
+    return plan.map(p => (p.id === id && input.status ? { ...p, status: planStatus(input.status) } : p))
+  }
+  if (!tool.endsWith('__update_plan')) return undefined
+  const items = toItems(input.items, 'content')
+  if (items) return items
+  let next = plan
+  if (input.advance === true) {
+    const at = next.findIndex(p => p.status === 'in_progress')
+    next = next.map((p, i) => (i === at ? { ...p, status: 'completed' } : p))
+    const to = next.findIndex((p, i) => i > at && p.status === 'pending')
+    next = next.map((p, i) => (i === to ? { ...p, status: 'in_progress' } : p))
+  }
+  const done = Array.isArray(input.done) ? input.done.map(Number) : []
+  const start = Number(input.start)
+  return next.map((p, i) =>
+    done.includes(i + 1)
+      ? { ...p, status: 'completed' }
+      : i + 1 === start
+        ? { ...p, status: 'in_progress' }
+        : p,
+  )
+}
+
+// The bottom-row bar: the share of the task list done, the open item pulsing each tick.
+// Without a list, a block sweeps back and forth while the turn runs.
+function progress(r: Run, t: number, cells: number) {
+  const n = r.plan.length
+  const isLive = r.status === 'running' || r.status === 'paused'
+  const beat = Math.floor(t / 1000)
+  if (n === 0) {
+    if (!isLive) return { text: '█'.repeat(cells), label: r.status === 'finished' ? '100%' : '' }
+    const span = 3
+    const lap = (cells - span) * 2
+    const at = lap > 0 ? beat % lap : 0
+    const from = at <= cells - span ? at : lap - at
+    return {
+      text: '░'.repeat(from) + '█'.repeat(span) + '░'.repeat(Math.max(0, cells - from - span)),
+      label: `${r.steps.length} steps`,
+    }
+  }
+  const done = r.plan.filter(p => p.status === 'completed').length
+  const half = r.plan.some(p => p.status === 'in_progress') ? 0.5 : 0
+  const share = Math.min(1, (done + (isLive ? half : 0)) / n)
+  const filled = Math.floor(share * cells)
+  const isPulse = isLive && half > 0 && filled < cells
+  return {
+    text:
+      '█'.repeat(filled) +
+      (isPulse ? (beat % 2 === 0 ? '▓' : '▒') : '') +
+      '░'.repeat(Math.max(0, cells - filled - (isPulse ? 1 : 0))),
+    label: `${done}/${n} · ${Math.round(share * 100)}%`,
   }
 }
 
@@ -1195,6 +1274,7 @@ export const register: Register = (on, options) => {
       ...r,
       cost: cost ?? r.cost,
       steps: r.steps.map(s => (s.id === step.id ? { ...s, endedAt, ok } : s)),
+      plan: (ok && nextPlan(e.tool, e as unknown as Record<string, unknown>, r.plan)) || r.plan,
     }))
 
     return ran
@@ -1527,6 +1607,8 @@ export const register: Register = (on, options) => {
     const others = day.sessions - (day.mine.length > 0 ? 1 : 0)
     const su = await read($, selfUpdate)
     const rel = await read($, release)
+    // The agent's progress, left of the version and Update; hidden before the first turn.
+    const bottom = r.status === 'idle' ? undefined : progress(r, t, Math.max(6, Math.min(16, width - 34)))
     // Button takes no disabled state: with nothing to pull, a dim label stands in.
     const updateView = (
       <Box flexDirection="column" alignItems="flex-end">
@@ -1537,6 +1619,12 @@ export const register: Register = (on, options) => {
           <Text color="error">{`Update failed${su.message ? `: ${su.message}` : ''}`}</Text>
         )}
         <Box flexDirection="row" gap={1}>
+          {bottom && (
+            <Text mono>
+              <Text color={status.color}>{bottom.text}</Text>
+              {bottom.label !== '' && <Text dimColor>{` ${bottom.label}`}</Text>}
+            </Text>
+          )}
           <Text mono dimColor>
             {rel.installed ? `v${rel.installed}` : ''}
             {canUpdate(rel, su) && rel.latest ? ` → v${rel.latest}` : ''}

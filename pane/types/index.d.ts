@@ -7,6 +7,13 @@ export type Step = {
   ok?: boolean
 }
 
+// One item of the agent's own task list (TodoWrite, TaskCreate/Update, the app's plan).
+export type PlanItem = {
+  id: string
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
 export type RunStatus =
   | 'idle'
   | 'running'
@@ -26,6 +33,7 @@ export type Run = {
   cost: number
   isPauseRequested: boolean
   steps: Step[]
+  plan: PlanItem[]
 }
 
 export type RateLimit = {

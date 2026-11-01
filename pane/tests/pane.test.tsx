@@ -439,6 +439,35 @@ test('no mark walks the bottom row while work runs', async ($, on) => {
   await ui.unmount()
 })
 
+test('the bottom bar follows the task list, and sweeps while a turn has none', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  const clock = engine(on, state)
+  on('tool.call', () => ({ result: {} }))
+  const bar = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const text = (await ui.find({ type: 'Text', text: /^[█▓▒░]+$/ }))?.text
+    const label = (await ui.find({ type: 'Text', text: /^ (\d+ steps|\d+\/\d+ · \d+%)$/ }))?.text
+    await ui.unmount()
+    return { text, label }
+  }
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'work', turnId: 'turn-p' })
+  const first = await bar()
+  expect(first.label).toBe(' 0 steps')
+  await clock.advance(1_000)
+  expect((await bar()).text).not.toBe(first.text)
+
+  const items = ['a', 'b', 'c', 'd'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items } as any)
+  expect((await bar()).label).toBe(' 0/4 · 13%')
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true } as any)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', done: [2] } as any)
+  expect((await bar()).label).toBe(' 2/4 · 50%')
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'x', status: 'completed' }, { content: 'y', status: 'in_progress' }] } as any)
+  expect((await bar()).label).toBe(' 1/2 · 75%')
+})
+
 const ymd = (ms: number) => {
   const d = new Date(ms)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
