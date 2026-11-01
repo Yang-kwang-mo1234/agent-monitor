@@ -2237,9 +2237,9 @@ export const register: Register = (on, options) => {
     if (r.status === 'idle') {
       return page(
         <Box flexDirection="column" gap={1}>
+          {usage}
           <Text weight="semibold">{model}</Text>
           <Text dimColor>Waiting for the next prompt.</Text>
-          {usage}
           {toolsView}
           {agentsView}
           {contextView}
@@ -2252,6 +2252,7 @@ export const register: Register = (on, options) => {
 
     return page(
       <Box flexDirection="column" gap={1}>
+        {usage}
         <Box flexDirection="row" justifyContent="space-between">
           <Text weight="semibold">{model}</Text>
           <Box flexDirection="row" gap={1}>
@@ -2334,7 +2335,6 @@ export const register: Register = (on, options) => {
             {done.length}/{r.steps.length}
           </Text>
         </Box>
-        {usage}
         {toolsView}
         {agentsView}
         {contextView}
