@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
+import type { AgentStatus, EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
 import type {
   AgentRow,
@@ -130,7 +130,7 @@ const handoff = atom(
 const agents = atom(
   { plugin: 'agent-monitor-pane', key: 'agents' } as const,
   [] as AgentRow[],
-  { shape: 'agents-1' },
+  { shape: 'agents-2' },
 )
 const selected = atom(
   { plugin: 'agent-monitor-pane', key: 'selected' } as const,
@@ -219,7 +219,7 @@ async function updatePane($: EngineInterface) {
 const branch = atom(
   { plugin: 'agent-monitor-pane', key: 'branch' } as const,
   null as Branch | null,
-  { shape: 'branch-1' },
+  { shape: 'branch-2' },
 )
 
 const today = atom(
@@ -673,10 +673,65 @@ function agentStep(e: Record<string, unknown>): string {
   return clean(line).replace(/\s+/g, ' ')
 }
 
+// Running, held, or between turns: not over yet.
+const isLiveAgent = (a: AgentRow) => a.status === 'running' || a.status === 'waiting' || a.status === 'idle'
 const isShown = (a: AgentRow, at: number) =>
-  a.status === 'running' || (a.endedAt !== undefined && at - a.endedAt < SHOW_DONE_MS)
-const agentIcon = (a: AgentRow) => (a.status === 'running' ? '●' : a.status === 'done' ? '✓' : '✗')
-const agentColor = (a: AgentRow) => (a.status === 'running' ? 'yellow' : a.status === 'done' ? 'green' : 'red')
+  isLiveAgent(a) || (a.endedAt !== undefined && at - a.endedAt < SHOW_DONE_MS)
+const AGENT_LOOK: Record<AgentRow['status'], { icon: string; color: string }> = {
+  running: { icon: '●', color: 'yellow' },
+  waiting: { icon: '◐', color: 'cyan' },
+  idle: { icon: '○', color: 'inactive' },
+  done: { icon: '✓', color: 'green' },
+  failed: { icon: '✗', color: 'red' },
+}
+const agentIcon = (a: AgentRow) => AGENT_LOOK[a.status].icon
+const agentColor = (a: AgentRow) => AGENT_LOOK[a.status].color
+
+const RESULT_MAX = 4000
+const oneLine = (s: string, n: number) => trim(clean(s), n)
+
+// A subagent's own task list as a short bar, `2/4`, and the item it is on; undefined without one.
+function agentPlan(a: AgentRow, cells: number) {
+  const plan = a.plan ?? []
+  if (plan.length === 0) return undefined
+  const done = plan.filter(p => p.status === 'completed').length
+  const filled = Math.round((done / plan.length) * cells)
+  const current = plan.find(p => p.status === 'in_progress')?.content
+  return {
+    bar: '█'.repeat(filled) + '░'.repeat(cells - filled),
+    label: `${done}/${plan.length}`,
+    current: current ? oneLine(current, 48) : '',
+  }
+}
+
+// The engine's word for where a loop stands, as a row shows it; ended loops are
+// left to their turn.complete.
+const LIST_STATUS: Partial<Record<AgentStatus, AgentRow['status']>> = {
+  pending: 'running',
+  running: 'running',
+  waiting: 'waiting',
+  idle: 'idle',
+}
+
+// Moves each live subagent row between running, waiting and idle by the engine's list.
+async function syncAgents($: EngineInterface) {
+  const rows = await read($, agents)
+  if (!rows.some(a => a.kind === 'agent' && isLiveAgent(a))) return
+  const list = await $.agent.list().catch(() => undefined)
+  if (!list) return
+  const stand = new Map(list.map(x => [x.id, LIST_STATUS[x.status]]))
+  const moved = (a: AgentRow) => {
+    const s = a.kind === 'agent' && isLiveAgent(a) ? stand.get(a.id) : undefined
+    return s !== undefined && s !== a.status ? s : undefined
+  }
+  if (!rows.some(a => moved(a) !== undefined)) return
+  await update($, agents, all =>
+    all.map((a): AgentRow => {
+      const s = moved(a)
+      return s ? { ...a, status: s } : a
+    }),
+  )
+}
 const agentElapsed = (a: AgentRow, at: number) => {
   const s = Math.max(0, Math.round(((a.endedAt ?? at) - a.startedAt) / 1000))
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
@@ -797,7 +852,19 @@ async function toastReview($: EngineInterface, row: AgentRow, failed: boolean) {
 
 // --- git branch band ------------------------------------------------------
 
-// The branch, ahead/behind and changed files, from one `git status`; null outside a repo.
+// The repository's name: the last part of origin's URL, else the top folder's name.
+async function repoName($: EngineInterface) {
+  const git = (args: string[]) =>
+    $.process
+      .run(['git', ...args], { timeoutMs: 3_000 })
+      .then(r => (r.exitCode === 0 ? r.stdout.trim() : ''))
+      .catch(() => '')
+  const [url, top] = await Promise.all([git(['remote', 'get-url', 'origin']), git(['rev-parse', '--show-toplevel'])])
+  const tail = (s: string) => s.replace(/\/+$/, '').split(/[/:]/).pop() ?? ''
+  return tail(url).replace(/\.git$/, '') || tail(top)
+}
+
+// The repository, branch, ahead/behind and changed files; null outside a repo.
 async function refreshBranch($: EngineInterface) {
   const res = await $.process
     .run(['git', 'status', '--porcelain=v2', '--branch'], { timeoutMs: 3_000 })
@@ -823,7 +890,7 @@ async function refreshBranch($: EngineInterface) {
       } else if (line && !line.startsWith('#')) changed++
     }
     if (name === '(detached)') name = `detached ${oid.slice(0, 7)}`
-    if (name) next = { name, ahead, behind, hasUpstream, changed }
+    if (name) next = { repo: await repoName($), name, ahead, behind, hasUpstream, changed }
   }
   const cur = await read($, branch)
   if (JSON.stringify(cur) !== JSON.stringify(next)) await update($, branch, () => next)
@@ -1002,8 +1069,10 @@ export const register: Register = (on, options) => {
     for (const t of agentTimers) t.cancel()
     agentTimers = [
       // Elapsed times tick while a row shows, and a finished row leaves after 30 s.
+      // A subagent's waiting or idle follows the engine's list.
       $.clock.every(1000, () => {
         void (async () => {
+          await syncAgents($).catch(() => {})
           const at = await $.clock.now()
           if ((await read($, agents)).some(a => isShown(a, at - 3_000))) await update($, now, () => at)
         })().catch(() => {})
@@ -1199,7 +1268,17 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId !== undefined || e.text === '') return next(e)
+    // A subagent woken by a message runs again under its row.
+    if (e.agentId !== undefined) {
+      const id = e.agentId
+      if ((await read($, agents)).some(a => a.id === id && a.status !== 'running')) {
+        await update($, agents, list =>
+          list.map((a): AgentRow => (a.id === id ? { ...a, status: 'running', endedAt: undefined } : a)),
+        )
+      }
+      return next(e)
+    }
+    if (e.text === '') return next(e)
 
     const t = await $.clock.now()
     const cost = (await $.session.usage()).cost?.usd ?? 0
@@ -1226,11 +1305,19 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) {
       const id = e.agentId
-      const line = agentStep(e as unknown as Record<string, unknown>)
+      const input = e as unknown as Record<string, unknown>
+      const line = agentStep(input)
       await update($, agents, list =>
         list.map(a => (a.id === id ? { ...a, tools: a.tools + 1, last: line } : a)),
       )
-      return next(e)
+      const ran = await next(e)
+      // Its own task list, kept on its row like the main run's.
+      if (ran.deny === undefined && ran.isError !== true && nextPlan(e.tool, input, []) !== undefined) {
+        await update($, agents, list =>
+          list.map(a => (a.id === id ? { ...a, plan: nextPlan(e.tool, input, a.plan ?? []) ?? a.plan } : a)),
+        )
+      }
+      return ran
     }
 
     const current = await read($, run)
@@ -1286,6 +1373,7 @@ export const register: Register = (on, options) => {
       const id = e.agentId
       const failed = e.reason === 'error' || e.reason === 'aborted'
       const at = await $.clock.now()
+      const answer = clean(res.text || e.answer || '').trim().slice(0, RESULT_MAX)
       const list = await update($, agents, all =>
         all.map((a): AgentRow => {
           if (a.id !== id) return a
@@ -1298,6 +1386,7 @@ export const register: Register = (on, options) => {
             status: failed ? 'failed' : 'done',
             endedAt: at,
             last: failed ? `stopped: ${e.reason}` : 'finished',
+            result: answer || a.result,
             model,
             usage,
             costUsd: usage ? costOf(model, usage) : a.costUsd,
@@ -1367,6 +1456,7 @@ export const register: Register = (on, options) => {
       : 'no upstream'
     const mine = (
       <Box key="agent-monitor-branch" flexDirection="row" gap={1}>
+        {b.repo !== '' && <Text weight="bold">{b.repo}</Text>}
         <Text backgroundColor="#2f6feb" color="#ffffff" weight="bold">
           {` ⎇ ${b.name} `}
         </Text>
@@ -1511,7 +1601,7 @@ export const register: Register = (on, options) => {
     const rows = await read($, agents)
     const pick = await read($, selected)
     const shownRows = rows.filter(a => isShown(a, wall))
-    const runningRows = rows.filter(a => a.status === 'running').length
+    const runningRows = rows.filter(isLiveAgent).length
     const spent = rows.reduce((n, a) => n + (a.costUsd ?? 0) + (a.route?.pickerUsd ?? 0), 0)
     const askedTotal = rows.reduce((n, a) => n + (a.askedUsd ?? 0), 0)
     const switched = rows.filter(a => a.route?.applied).length
@@ -1526,7 +1616,7 @@ export const register: Register = (on, options) => {
     const toggleRow = (id: string) => () =>
       void update($, selected, cur => (cur === id ? null : id))
     const clearFinished = () =>
-      void update($, agents, all => all.filter(a => a.status === 'running'))
+      void update($, agents, all => all.filter(isLiveAgent))
     const agentsView =
       rows.length === 0 ? null : (
         <Box flexDirection="column">
@@ -1545,9 +1635,15 @@ export const register: Register = (on, options) => {
               a.review?.findings ? findingsText(a.review.findings) : '',
               routeText,
               a.kind === 'agent' ? `${a.tools} tools` : '',
-              a.kind === 'agent' && a.status !== 'running' ? usdShort(a.costUsd) : '',
+              a.kind === 'agent' && (a.status === 'done' || a.status === 'failed') ? usdShort(a.costUsd) : '',
+              a.status === 'waiting' || a.status === 'idle' ? a.status : '',
               a.status !== 'done' ? a.last : '',
             ].filter(Boolean)
+            const pl = agentPlan(a, Math.max(6, Math.min(12, width - 30)))
+            const isOpen = opened?.id === a.id
+            // Its report, unless the last message shown already says it.
+            const said = (m: { role: string; text: string }) =>
+              !!a.result && m.role === 'assistant' && oneLine(m.text, 300) === oneLine(a.result, 300)
             return (
               <Box key={a.id} flexDirection="column">
                 <Button key={`agent-${a.id}`} plain onPress={toggleRow(a.id)}>
@@ -1555,7 +1651,15 @@ export const register: Register = (on, options) => {
                   <Text dimColor>{`${a.model ? ` (${modelName(a.model)})` : ''}  ${agentElapsed(a, wall)}`}</Text>
                 </Button>
                 <Text dimColor>{`  ${facts.join(' · ')}`}</Text>
-                {opened?.id === a.id && a.kind === 'shell' && (
+                {pl && (
+                  <Text mono>
+                    {'  '}
+                    <Text color={agentColor(a)}>{pl.bar}</Text>
+                    <Text dimColor>{` ${pl.label}${pl.current ? ` · ${pl.current}` : ''}`}</Text>
+                  </Text>
+                )}
+                {a.result && !isOpen && <Text dimColor>{`  ↳ ${oneLine(a.result, Math.max(20, width - 4))}`}</Text>}
+                {isOpen && a.kind === 'shell' && (
                   <Box flexDirection="column">
                     <Text dimColor mono>{`  $ ${clean(a.detail ?? '')}`}</Text>
                     {(a.lines ?? []).length === 0 && <Text dimColor>{'  No output yet.'}</Text>}
@@ -1564,11 +1668,16 @@ export const register: Register = (on, options) => {
                     ))}
                   </Box>
                 )}
-                {opened?.id === a.id && a.kind === 'agent' && (
+                {isOpen && a.kind === 'agent' && (
                   <Box flexDirection="column">
                     {a.route && <Text dimColor>{`  ${a.type} · ${a.route.reason}`}</Text>}
-                    {openedMessages.length === 0 && <Text dimColor>{'  No messages yet.'}</Text>}
-                    {openedMessages.map(m => (
+                    {openedMessages.length === 0 && !a.result && <Text dimColor>{'  No messages yet.'}</Text>}
+                    {(a.plan ?? []).map(p => (
+                      <Text dimColor={p.status === 'completed'}>
+                        {`  ${p.status === 'completed' ? '✓' : p.status === 'in_progress' ? '▸' : '·'} ${oneLine(p.content, 80)}`}
+                      </Text>
+                    ))}
+                    {openedMessages.filter(m => !said(m)).map(m => (
                       <Text>
                         <Text color={m.role === 'assistant' ? 'cyan' : undefined} weight="semibold">
                           {m.role === 'assistant' ? '  agent: ' : '  task:  '}
@@ -1576,6 +1685,12 @@ export const register: Register = (on, options) => {
                         <Text>{clean(m.text).replace(/\s+/g, ' ').slice(0, 300) || '(tool calls)'}</Text>
                       </Text>
                     ))}
+                    {a.result && (
+                      <Text>
+                        <Text color={agentColor(a)} weight="semibold">{'  result: '}</Text>
+                        <Text>{a.result}</Text>
+                      </Text>
+                    )}
                   </Box>
                 )}
               </Box>
@@ -1607,39 +1722,47 @@ export const register: Register = (on, options) => {
     const others = day.sessions - (day.mine.length > 0 ? 1 : 0)
     const su = await read($, selfUpdate)
     const rel = await read($, release)
-    // The agent's progress, left of the version and Update; hidden before the first turn.
+    // The agent's progress at the bottom left; hidden before the first turn.
     const bottom = r.status === 'idle' ? undefined : progress(r, t, Math.max(6, Math.min(16, width - 34)))
     // Button takes no disabled state: with nothing to pull, a dim label stands in.
     const updateView = (
-      <Box flexDirection="column" alignItems="flex-end">
+      <Box flexDirection="column">
         {su.status === 'done' && (
-          <Text color="success">{`${su.message ? `${su.message} · ` : ''}Open a new session to apply.`}</Text>
+          <Box flexDirection="row" justifyContent="flex-end">
+            <Text color="success">{`${su.message ? `${su.message} · ` : ''}Open a new session to apply.`}</Text>
+          </Box>
         )}
         {su.status === 'failed' && (
-          <Text color="error">{`Update failed${su.message ? `: ${su.message}` : ''}`}</Text>
+          <Box flexDirection="row" justifyContent="flex-end">
+            <Text color="error">{`Update failed${su.message ? `: ${su.message}` : ''}`}</Text>
+          </Box>
         )}
-        <Box flexDirection="row" gap={1}>
-          {bottom && (
+        <Box flexDirection="row" justifyContent="space-between" gap={1}>
+          {bottom ? (
             <Text mono>
               <Text color={status.color}>{bottom.text}</Text>
               {bottom.label !== '' && <Text dimColor>{` ${bottom.label}`}</Text>}
             </Text>
-          )}
-          <Text mono dimColor>
-            {rel.installed ? `v${rel.installed}` : ''}
-            {canUpdate(rel, su) && rel.latest ? ` → v${rel.latest}` : ''}
-          </Text>
-          {canUpdate(rel, su) ? (
-            <Button key="self-update" variant="primary" onPress={() => void updatePane($)}>
-              Update
-            </Button>
           ) : (
-            <Text dimColor>{su.status === 'running' ? 'Updating…' : 'Update'}</Text>
+            <Text>{''}</Text>
           )}
+          <Box flexDirection="row" gap={1}>
+            <Text mono dimColor>
+              {rel.installed ? `v${rel.installed}` : ''}
+              {canUpdate(rel, su) && rel.latest ? ` → v${rel.latest}` : ''}
+            </Text>
+            {canUpdate(rel, su) ? (
+              <Button key="self-update" variant="primary" onPress={() => void updatePane($)}>
+                Update
+              </Button>
+            ) : (
+              <Text dimColor>{su.status === 'running' ? 'Updating…' : 'Update'}</Text>
+            )}
+          </Box>
         </Box>
       </Box>
     )
-    // The body fills the pane's height, so the version and Update sit at its bottom right.
+    // The body fills the pane's height, so the progress bar sits at its bottom left and the version and Update at its bottom right.
     const page = (content: RenderChildren) => (
       <Box flexDirection="column" minHeight={bodyRows}>
         <Box flexDirection="column" gap={1} flexGrow={1}>

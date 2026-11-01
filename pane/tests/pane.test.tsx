@@ -320,6 +320,66 @@ test('a subagent shows with its model, steps and cost, and expands to its messag
   await after.unmount()
 })
 
+test('a subagent row shows its task list, waiting, and its result', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  const clock = engine(on, state)
+  let stand = 'running'
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'a2' }))
+  on('agent.list', () => ({
+    value: [{ id: 'a2', description: 'Audit hooks', type: 'general-purpose', status: stand }] as any,
+  }))
+  on('tool.call', () => ({ result: {} }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'audit the hooks' }] as any }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'audit', turnId: 'turn-b' })
+  await $.agent.spawn({
+    tool_use_id: 'tu2',
+    prompt: 'audit the hooks',
+    description: 'Audit hooks',
+    subagentType: 'general-purpose',
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+  } as any)
+  await $.tool.call({
+    tool: 'TodoWrite',
+    agentId: 'a2',
+    todos: [
+      { content: 'Read register.tsx', status: 'completed' },
+      { content: 'Check the tests', status: 'in_progress' },
+      { content: 'Write the report', status: 'pending' },
+    ],
+  } as any)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /1\/3/ }))?.text).toBe('  ███░░░░░ 1/3 · Check the tests')
+  await ui.unmount()
+
+  stand = 'waiting'
+  await clock.advance(1_000)
+  const held = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await held.find({ type: 'Text', text: /Audit hooks/ }))?.text).toBe('◐ Audit hooks')
+  expect((await held.find({ type: 'Text', text: /waiting/ }))?.text).toContain('waiting')
+  await held.unmount()
+
+  await $.turn.complete({
+    answer: 'All hooks pass.\nOne nit in tests.',
+    durationMs: 10,
+    isAborted: false,
+    turnId: 'sub-2',
+    agentId: 'a2',
+    reason: 'answer',
+  } as any)
+
+  const after = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await after.find({ type: 'Text', text: /↳/ }))?.text).toBe('  ↳ All hooks pass. One nit in tests.')
+  await after.press({ plugin: 'agent-monitor-pane', key: 'agent-a2' })
+  expect((await after.find({ type: 'Text', text: /^All hooks pass/ }))?.text).toBe('All hooks pass.\nOne nit in tests.')
+  await after.unmount()
+})
+
 test('a background Bash command gets a shell row', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
@@ -383,11 +443,18 @@ test('a foreground codex review shows its model, then its findings', async ($, o
   expect(toasts.at(-1)).toContain('2 findings (P1, P2)')
 })
 
-test('the branch band shows the branch, changes and sync above the prompt', async ($, on) => {
+test('the branch band shows the repository, branch, changes and sync above the prompt', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
+  const out = (stdout: string) => ({
+    value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  })
   on('process.run', (_: unknown, e: any) =>
-    e.argv[0] === 'git'
+    e.argv[1] === 'remote'
+      ? out('git@github.com:someone/agent-monitor.git\n')
+      : e.argv[1] === 'rev-parse'
+        ? out('/repo\n')
+        : e.argv[0] === 'git'
       ? {
           value: {
             exitCode: 0,
@@ -421,6 +488,7 @@ test('the branch band shows the branch, changes and sync above the prompt', asyn
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80 },
   } as any)
   expect((await band.find({ type: 'Text', text: /⎇/ }))?.text).toBe(' ⎇ feature/pane ')
+  expect((await band.find({ type: 'Text', text: 'agent-monitor' }))?.text).toBe('agent-monitor')
   expect((await band.find({ type: 'Text', text: /changed/ }))?.text).toBe('● 2 changed')
   expect((await band.find({ type: 'Text', text: /↑/ }))?.text).toBe('↑2 ↓1')
   expect((await band.find({ type: 'Text', text: /engine row/ }))?.text).toBe('engine row')

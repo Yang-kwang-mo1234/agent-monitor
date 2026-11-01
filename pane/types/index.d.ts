@@ -106,7 +106,8 @@ export type AgentRow = {
   kind: 'agent' | 'shell'
   description: string
   type: string
-  status: 'running' | 'done' | 'failed'
+  // waiting: held on its own background work or an approval; idle: between turns, until a message wakes it.
+  status: 'running' | 'waiting' | 'idle' | 'done' | 'failed'
   startedAt: number
   endedAt?: number
   tools: number
@@ -122,6 +123,8 @@ export type AgentRow = {
   misses?: number
   lines?: string[]
   review?: ReviewInfo // review-watch: a codex review command or a review subagent
+  plan?: PlanItem[] // a subagent's own task list, from its TodoWrite or Task calls
+  result?: string // a subagent's final answer, cut short
 }
 
 export type ReviewInfo = {
@@ -133,6 +136,7 @@ export type ReviewInfo = {
 
 // The branch band above the prompt.
 export type Branch = {
+  repo: string // the repository: origin's name, else the top folder's
   name: string // the branch, or `detached <sha>`
   ahead: number
   behind: number
