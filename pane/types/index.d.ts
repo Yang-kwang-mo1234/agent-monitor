@@ -167,6 +167,12 @@ export type SelfUpdate = {
   message?: string
 }
 
+// The Graft Update button: `graphify update` for the files changed since the last build.
+export type GraftUpdate = {
+  status: 'idle' | 'running' | 'done' | 'failed'
+  message?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-monitor-pane': {
@@ -184,6 +190,7 @@ declare module 'claude-code' {
       release: Shaped<Release>
       today: Shaped<Today>
       selfUpdate: Shaped<SelfUpdate>
+      graftUpdate: Shaped<GraftUpdate>
     }
   }
 }

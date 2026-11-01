@@ -6,6 +6,7 @@ import type {
   Branch,
   CacheState,
   CacheTtl,
+  GraftUpdate,
   Handoff,
   PlanItem,
   RateLimit,
@@ -852,6 +853,50 @@ async function toastReview($: EngineInterface, row: AgentRow, failed: boolean) {
 
 // --- git branch band ------------------------------------------------------
 
+const graftUpdate = atom(
+  { plugin: 'agent-monitor-pane', key: 'graftUpdate' } as const,
+  { status: 'idle' } as GraftUpdate,
+  { shape: 'graftUpdate-1' },
+)
+
+const GRAFT_LABEL = 'Graft Update'
+
+// Re-extracts the code files changed since the last /graphify build; no LLM needed.
+async function runGraftUpdate($: EngineInterface) {
+  if ((await read($, graftUpdate)).status === 'running') return
+  const cwd = await $.session.cwd()
+  if (!(await $.fs.exists(`${cwd}/graphify-out/graph.json`).catch(() => false))) {
+    $.ui.toast('No graphify graph here yet. Run /graphify . first.')
+    return
+  }
+  await update($, graftUpdate, (): GraftUpdate => ({ status: 'running' }))
+  // A login shell, so `graphify` is found on the person's own PATH.
+  const res = await $.process
+    .run(['/bin/zsh', '-lc', 'graphify update'], { cwd, timeoutMs: 600_000 })
+    .catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: String(err) }))
+  const lines = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean)
+  const out = lines(res.stdout).filter(l => !l.startsWith('Tip:'))
+  // graphify's own summary: "Rebuilt: N nodes, ..." or "No code-graph topology changes ...".
+  const summary = out
+    .filter(l => l.startsWith('[graphify watch]') && !l.includes('updated in'))
+    .at(-1)
+    ?.replace('[graphify watch] ', '')
+  const next: GraftUpdate =
+    res.exitCode === 0
+      ? { status: 'done', message: summary ?? out.at(-1) }
+      : { status: 'failed', message: lines(res.stderr).at(-1) ?? out.at(-1) }
+  await update($, graftUpdate, () => next)
+  $.ui.toast(
+    next.status === 'done'
+      ? `✓ Graft Update: ${next.message ?? 'graph updated'}`
+      : `Graft Update failed${next.message ? `: ${next.message}` : ''}`,
+  )
+}
+
+// Cuts text to `max` cells, ending in "..." when it had to cut.
+const clip = (text: string, max: number) =>
+  text.length <= max ? text : `${text.slice(0, Math.max(1, max - 3))}...`
+
 // The repository's name: the last part of origin's URL, else the top folder's name.
 async function repoName($: EngineInterface) {
   const git = (args: string[]) =>
@@ -1443,27 +1488,44 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The branch, drawn above the prompt box where it is hard to miss.
+  // The branch, drawn above the prompt box where it is hard to miss, with
+  // Graft Update at its right end.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, branch)
     if (e.props.hasSurvey || !b) return next(e)
     const rest = await next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const gu = await read($, graftUpdate)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const sync = b.hasUpstream
       ? b.ahead || b.behind
         ? `↑${b.ahead} ↓${b.behind}`
         : 'up to date'
       : 'no upstream'
+    const state = b.changed ? `● ${b.changed} changed` : '✓ clean'
+    const isRunning = gu.status === 'running'
+    // The button keeps its place on this row: a long branch name is cut instead.
+    // The terminal draws a primary Button as `[ label ]`.
+    const buttonCells = isRunning ? 'Updating…'.length : GRAFT_LABEL.length + 4
+    const fixed =
+      (b.repo !== '' ? b.repo.length + 1 : 0) + 4 + 1 + state.length + 1 + sync.length + 1 + buttonCells
+    const name = clip(b.name, Math.max(4, e.props.bodyColumns - fixed))
     const mine = (
-      <Box key="agent-monitor-branch" flexDirection="row" gap={1}>
-        {b.repo !== '' && <Text weight="bold">{b.repo}</Text>}
-        <Text backgroundColor="#2f6feb" color="#ffffff" weight="bold">
-          {` ⎇ ${b.name} `}
-        </Text>
-        <Text color={b.changed ? 'yellow' : 'green'}>
-          {b.changed ? `● ${b.changed} changed` : '✓ clean'}
-        </Text>
-        <Text dimColor>{sync}</Text>
+      <Box key="agent-monitor-branch" flexDirection="row" justifyContent="space-between" gap={1}>
+        <Box flexDirection="row" gap={1} flexShrink={1}>
+          {b.repo !== '' && <Text weight="bold" wrap="truncate-end">{b.repo}</Text>}
+          <Text backgroundColor="#2f6feb" color="#ffffff" weight="bold" wrap="truncate-end">
+            {` ⎇ ${name} `}
+          </Text>
+          <Text color={b.changed ? 'yellow' : 'green'} wrap="truncate-end">{state}</Text>
+          <Text dimColor wrap="truncate-end">{sync}</Text>
+        </Box>
+        {isRunning ? (
+          <Text dimColor>Updating…</Text>
+        ) : (
+          <Button key="graft-update" variant="primary" onPress={() => void runGraftUpdate($)}>
+            {GRAFT_LABEL}
+          </Button>
+        )}
       </Box>
     )
     return (

@@ -90,6 +90,15 @@ claude plugin install agent-monitor-pane --marketplace Yang-kwang-mo1234/agent-m
 
 입력창 위에는 **git 브랜치 띠**(`agent-monitor ⎇ main · ● 3 changed · ↑2 ↓1`)가 나옵니다. 맨 앞은 저장소 이름으로, origin 주소의 마지막 부분이고 origin이 없으면 저장소 최상위 폴더 이름입니다.
 
+브랜치 띠 오른쪽 끝에는 **Graft Update** 버튼이 있습니다.
+
+- 누르면 세션 폴더에서 `graphify update`를 실행합니다. `/graphify .`로 처음 그래프를 만든 뒤 바뀐 코드 파일을 그래프에 다시 반영합니다. LLM을 쓰지 않아 비용이 없습니다.
+- 끝나면 결과를 알림으로 보여 줍니다(`✓ Graft Update: Rebuilt: 72 nodes, 85 edges, 7 communities`). 실행 중에는 버튼 자리에 `Updating…`이 나옵니다.
+- 그래프(`graphify-out/graph.json`)가 없으면 아무것도 실행하지 않고 `/graphify .`를 먼저 하라고 알려 줍니다.
+- 문서, 논문, 이미지 변경은 반영하지 않습니다. 그런 변경은 Claude에게 `/graphify --update`를 요청하세요.
+- 브랜치 이름이 길면 버튼이 다음 줄로 밀리지 않도록 이름 뒤쪽을 `...`으로 자릅니다.
+- [graphify](https://github.com/Graphify-Labs/graphify) CLI가 필요합니다: `uv tool install graphifyy`
+
 - `/monitor`: 닫은 패널을 다시 엽니다.
 - **Pause**는 다음 도구 호출 직전에 Resume / Cancel을 묻습니다. **Cancel**은 실행 중인 턴을 바로 끊습니다.
 
