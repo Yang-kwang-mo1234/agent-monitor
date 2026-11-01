@@ -167,9 +167,11 @@ export type SelfUpdate = {
   message?: string
 }
 
-// The Graft Update button: `graphify update` for the files changed since the last build.
+// The Graft Init / Update button: `graphify update .` builds the first code graph,
+// `graphify update` adds the files changed since.
 export type GraftUpdate = {
   status: 'idle' | 'running' | 'done' | 'failed'
+  mode?: 'init' | 'update'
   message?: string
 }
 
@@ -191,6 +193,7 @@ declare module 'claude-code' {
       today: Shaped<Today>
       selfUpdate: Shaped<SelfUpdate>
       graftUpdate: Shaped<GraftUpdate>
+      hasGraph: Shaped<boolean>
     }
   }
 }

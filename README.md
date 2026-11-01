@@ -90,12 +90,13 @@ claude plugin install agent-monitor-pane --marketplace Yang-kwang-mo1234/agent-m
 
 입력창 위에는 **git 브랜치 띠**(`agent-monitor ⎇ main · ● 3 changed · ↑2 ↓1`)가 나옵니다. 맨 앞은 저장소 이름으로, origin 주소의 마지막 부분이고 origin이 없으면 저장소 최상위 폴더 이름입니다.
 
-브랜치 띠 오른쪽 끝에는 **Graft Update** 버튼이 있습니다.
+브랜치 띠 오른쪽 끝에는 graphify 버튼이 있습니다. 세션 폴더에 그래프(`graphify-out/graph.json`)가 있는지에 따라 바뀝니다.
 
-- 누르면 세션 폴더에서 `graphify update`를 실행합니다. `/graphify .`로 처음 그래프를 만든 뒤 바뀐 코드 파일을 그래프에 다시 반영합니다. LLM을 쓰지 않아 비용이 없습니다.
-- 끝나면 결과를 알림으로 보여 줍니다(`✓ Graft Update: Rebuilt: 72 nodes, 85 edges, 7 communities`). 실행 중에는 버튼 자리에 `Updating…`이 나옵니다.
-- 그래프(`graphify-out/graph.json`)가 없으면 아무것도 실행하지 않고 `/graphify .`를 먼저 하라고 알려 줍니다.
-- 문서, 논문, 이미지 변경은 반영하지 않습니다. 그런 변경은 Claude에게 `/graphify --update`를 요청하세요.
+- **Graft Init** (그래프가 없을 때): 누르면 `graphify update .`로 세션 폴더의 코드 그래프를 처음 만듭니다. 끝나면 버튼이 **Graft Update**로 바뀝니다.
+- **Graft Update** (그래프가 있을 때): 누르면 `graphify update`로 처음 만든 뒤 바뀐 코드 파일을 그래프에 다시 반영합니다.
+- 둘 다 LLM을 쓰지 않아 비용이 없습니다. 끝나면 결과를 알림으로 보여 주고(`✓ Graft Init: Rebuilt: 72 nodes, 85 edges, 7 communities`), 실행 중에는 버튼 자리에 `Initializing…`이나 `Updating…`이 나옵니다.
+- 코드만 그래프로 만듭니다. 문서, 논문, 이미지까지 넣으려면 Claude에게 `/graphify .`(처음)나 `/graphify --update`(이후)를 요청하세요.
+- 그래프는 프로젝트의 `graphify-out/` 폴더에 생깁니다. 커밋하지 않으려면 프로젝트의 `.gitignore`에 `graphify-out/`을 넣으세요.
 - 브랜치 이름이 길면 버튼이 다음 줄로 밀리지 않도록 이름 뒤쪽을 `...`으로 자릅니다.
 - [graphify](https://github.com/Graphify-Labs/graphify) CLI가 필요합니다: `uv tool install graphifyy`
 

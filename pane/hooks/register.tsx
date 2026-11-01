@@ -859,20 +859,38 @@ const graftUpdate = atom(
   { shape: 'graftUpdate-1' },
 )
 
-const GRAFT_LABEL = 'Graft Update'
+// Whether the session's folder has a graphify graph yet: Init before, Update after.
+const hasGraph = atom(
+  { plugin: 'agent-monitor-pane', key: 'hasGraph' } as const,
+  false,
+  { shape: 'hasGraph-1' },
+)
 
-// Re-extracts the code files changed since the last /graphify build; no LLM needed.
-async function runGraftUpdate($: EngineInterface) {
+const GRAFT_LABEL = { init: 'Graft Init', update: 'Graft Update' } as const
+const GRAFT_RUNNING = { init: 'Initializing…', update: 'Updating…' } as const
+
+async function graphExists($: EngineInterface, cwd: string) {
+  return $.fs.exists(`${cwd}/graphify-out/graph.json`).catch(() => false)
+}
+
+async function refreshGraph($: EngineInterface) {
+  const yes = await graphExists($, await $.session.cwd())
+  if ((await read($, hasGraph)) !== yes) await update($, hasGraph, () => yes)
+}
+
+// Without a graph, builds the code graph of the session's folder (`graphify update .`);
+// with one, re-extracts the code changed since the last build. No LLM either way.
+async function runGraft($: EngineInterface) {
   if ((await read($, graftUpdate)).status === 'running') return
   const cwd = await $.session.cwd()
-  if (!(await $.fs.exists(`${cwd}/graphify-out/graph.json`).catch(() => false))) {
-    $.ui.toast('No graphify graph here yet. Run /graphify . first.')
-    return
-  }
-  await update($, graftUpdate, (): GraftUpdate => ({ status: 'running' }))
+  const mode = (await graphExists($, cwd)) ? 'update' : 'init'
+  await update($, graftUpdate, (): GraftUpdate => ({ status: 'running', mode }))
   // A login shell, so `graphify` is found on the person's own PATH.
   const res = await $.process
-    .run(['/bin/zsh', '-lc', 'graphify update'], { cwd, timeoutMs: 600_000 })
+    .run(['/bin/zsh', '-lc', mode === 'init' ? 'graphify update .' : 'graphify update'], {
+      cwd,
+      timeoutMs: 600_000,
+    })
     .catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: String(err) }))
   const lines = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean)
   const out = lines(res.stdout).filter(l => !l.startsWith('Tip:'))
@@ -883,13 +901,14 @@ async function runGraftUpdate($: EngineInterface) {
     ?.replace('[graphify watch] ', '')
   const next: GraftUpdate =
     res.exitCode === 0
-      ? { status: 'done', message: summary ?? out.at(-1) }
-      : { status: 'failed', message: lines(res.stderr).at(-1) ?? out.at(-1) }
+      ? { status: 'done', mode, message: summary ?? out.at(-1) }
+      : { status: 'failed', mode, message: lines(res.stderr).at(-1) ?? out.at(-1) }
   await update($, graftUpdate, () => next)
+  await refreshGraph($).catch(() => {})
   $.ui.toast(
     next.status === 'done'
-      ? `✓ Graft Update: ${next.message ?? 'graph updated'}`
-      : `Graft Update failed${next.message ? `: ${next.message}` : ''}`,
+      ? `✓ ${GRAFT_LABEL[mode]}: ${next.message ?? 'graph updated'}`
+      : `${GRAFT_LABEL[mode]} failed${next.message ? `: ${next.message}` : ''}`,
   )
 }
 
@@ -939,6 +958,7 @@ async function refreshBranch($: EngineInterface) {
   }
   const cur = await read($, branch)
   if (JSON.stringify(cur) !== JSON.stringify(next)) await update($, branch, () => next)
+  if (next) await refreshGraph($).catch(() => {})
 }
 
 // --- today's work time ----------------------------------------------------
@@ -1489,12 +1509,13 @@ export const register: Register = (on, options) => {
   })
 
   // The branch, drawn above the prompt box where it is hard to miss, with
-  // Graft Update at its right end.
+  // Graft Init (no graph yet) or Graft Update at its right end.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, branch)
     if (e.props.hasSurvey || !b) return next(e)
     const rest = await next(e)
     const gu = await read($, graftUpdate)
+    const mode = (await read($, hasGraph)) ? 'update' : 'init'
     const { Box, Text, Button } = $.ui.resolve(e)
     const sync = b.hasUpstream
       ? b.ahead || b.behind
@@ -1505,7 +1526,8 @@ export const register: Register = (on, options) => {
     const isRunning = gu.status === 'running'
     // The button keeps its place on this row: a long branch name is cut instead.
     // The terminal draws a primary Button as `[ label ]`.
-    const buttonCells = isRunning ? 'Updating…'.length : GRAFT_LABEL.length + 4
+    const running = GRAFT_RUNNING[gu.mode ?? mode]
+    const buttonCells = isRunning ? running.length : GRAFT_LABEL[mode].length + 4
     const fixed =
       (b.repo !== '' ? b.repo.length + 1 : 0) + 4 + 1 + state.length + 1 + sync.length + 1 + buttonCells
     const name = clip(b.name, Math.max(4, e.props.bodyColumns - fixed))
@@ -1520,10 +1542,10 @@ export const register: Register = (on, options) => {
           <Text dimColor wrap="truncate-end">{sync}</Text>
         </Box>
         {isRunning ? (
-          <Text dimColor>Updating…</Text>
+          <Text dimColor>{running}</Text>
         ) : (
-          <Button key="graft-update" variant="primary" onPress={() => void runGraftUpdate($)}>
-            {GRAFT_LABEL}
+          <Button key={`graft-${mode}`} variant="primary" onPress={() => void runGraft($)}>
+            {GRAFT_LABEL[mode]}
           </Button>
         )}
       </Box>

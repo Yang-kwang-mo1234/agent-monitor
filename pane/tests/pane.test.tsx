@@ -689,7 +689,7 @@ const BAND = (bodyColumns: number) =>
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns },
   }) as any
 
-test('a long branch name is cut with ... so Graft Update stays on the branch row', async ($, on) => {
+test('a long branch name is cut with ... so the Graft button stays on the branch row', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
   // The engine's own row above the prompt, beneath the plugin.
@@ -699,6 +699,8 @@ test('a long branch name is cut with ... so Graft Update stays on the branch row
   })
   const long = 'feature/a-very-long-branch-name-that-would-push-the-button-down'
   const git = gitFor(long)
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('fs.exists', () => ({ value: true }))
   on('process.run', (_: unknown, e: any) => ({
     value: git(e.argv) ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
@@ -716,7 +718,7 @@ test('a long branch name is cut with ... so Graft Update stays on the branch row
   await band.unmount()
 })
 
-test('a short branch name is drawn whole beside Graft Update', async ($, on) => {
+test('a short branch name is drawn whole, and Graft Init shows before any graph', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
   // The engine's own row above the prompt, beneath the plugin.
@@ -725,13 +727,16 @@ test('a short branch name is drawn whole beside Graft Update', async ($, on) => 
     return <Text>engine row</Text>
   })
   const git = gitFor('main')
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('fs.exists', () => ({ value: false }))
   on('process.run', (_: unknown, e: any) => ({
     value: git(e.argv) ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount(BAND(70))
   expect((await band.find({ type: 'Text', text: /⎇/ }))?.text).toBe(' ⎇ main ')
-  expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeTruthy()
+  expect(await band.find({ type: 'Button', key: 'graft-init' })).toBeTruthy()
+  expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeFalsy()
   await band.unmount()
 })
 
@@ -780,7 +785,7 @@ test('Graft Update runs graphify update in the session folder and says what chan
   await band.unmount()
 })
 
-test('Graft Update without a graph asks for /graphify first and runs nothing', async ($, on) => {
+test('Graft Init builds the first graph with graphify update . and then turns into Graft Update', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   engine(on, state)
   // The engine's own row above the prompt, beneath the plugin.
@@ -788,24 +793,43 @@ test('Graft Update without a graph asks for /graphify first and runs nothing', a
     const { Text } = $.ui.resolve(e)
     return <Text>engine row</Text>
   })
-  const ran: string[][] = []
+  const ran: { argv: string[]; cwd?: string }[] = []
   const toasts: string[] = []
   const git = gitFor('main')
+  let built = false
   on('session.cwd', () => ({ value: '/repo' }))
   on('ui.toast', (_: unknown, e: any) => {
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('fs.exists', () => ({ value: false }))
+  on('fs.exists', (_: unknown, e: any) => ({ value: built && e.path === '/repo/graphify-out/graph.json' }))
   on('process.run', (_: unknown, e: any) => {
-    ran.push(e.argv)
-    return { value: git(e.argv) ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    ran.push({ argv: e.argv, cwd: e.init?.cwd })
+    const isGraft = e.argv[0] === '/bin/zsh' && e.argv[2]?.startsWith('graphify update')
+    if (isGraft) built = true
+    return {
+      value: isGraft
+        ? {
+            exitCode: 0,
+            stdout: 'Re-extracting code files in . (no LLM needed)...\n[graphify watch] Rebuilt: 72 nodes, 85 edges, 7 communities\nCode graph updated.\n',
+            stderr: '',
+            isStdoutTruncated: false,
+            isStderrTruncated: false,
+          }
+        : (git(e.argv) ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }),
+    }
   })
 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount(BAND(100))
-  await band.press({ plugin: 'agent-monitor-pane', key: 'graft-update' })
-  expect(ran.some(a => a[2] === 'graphify update')).toBe(false)
-  expect(toasts.at(-1)).toBe('No graphify graph here yet. Run /graphify . first.')
+  expect((await band.find({ type: 'Button', key: 'graft-init' }))?.text).toBe('Graft Init')
+  await band.press({ plugin: 'agent-monitor-pane', key: 'graft-init' })
+
+  const init = ran.find(r => r.argv[2]?.startsWith('graphify update'))
+  expect(init?.argv).toEqual(['/bin/zsh', '-lc', 'graphify update .'])
+  expect(init?.cwd).toBe('/repo')
+  expect(toasts.at(-1)).toBe('✓ Graft Init: Rebuilt: 72 nodes, 85 edges, 7 communities')
+  expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeTruthy()
+  expect(await band.find({ type: 'Button', key: 'graft-init' })).toBeFalsy()
   await band.unmount()
 })
