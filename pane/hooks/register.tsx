@@ -10,6 +10,7 @@ import type {
   DayTotal,
   GraftUpdate,
   Handoff,
+  PaneTab,
   PlanItem,
   RateLimit,
   Reading,
@@ -154,6 +155,11 @@ const selected = atom(
   null as string | null,
   { shape: 'selected-1' },
 )
+const tab = atom(
+  { plugin: 'agent-monitor-pane', key: 'tab' } as const,
+  'turn' as PaneTab,
+  { shape: 'tab-1' },
+)
 
 // How the session is billed, read once at session start.
 const billing = atom(
@@ -221,7 +227,7 @@ async function checkRelease($: EngineInterface) {
     await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).catch(() => ''),
   )
   const res = await $.process
-    .run(['/bin/zsh', '-lc', LATEST_SH], { timeoutMs: 60_000 })
+    .run(['bash', '-lc', LATEST_SH], { timeoutMs: 60_000 })
     .catch(() => undefined)
   const latest = res?.exitCode === 0 ? versionOf(res.stdout) : undefined
   const cur = await read($, release)
@@ -240,7 +246,7 @@ async function updatePane($: EngineInterface) {
   if (!canUpdate(await read($, release), await read($, selfUpdate))) return
   await update($, selfUpdate, (): SelfUpdate => ({ status: 'running' }))
   const res = await $.process
-    .run(['/bin/zsh', '-lc', UPDATE_SH], { timeoutMs: 180_000 })
+    .run(['bash', '-lc', UPDATE_SH], { timeoutMs: 180_000 })
     .catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: String(err) }))
   const lastLine = (text: string) =>
     text.split('\n').map(l => l.trim()).filter(Boolean).at(-1) ?? ''
@@ -371,7 +377,7 @@ async function detectBilling($: EngineInterface, setting: BillingSetting) {
   // A login shell, so `claude` is found where the person's own PATH puts it.
   const res =
     setting === 'auto' && !isCloud
-      ? await $.process.run(['/bin/zsh', '-lc', 'claude auth status'], { timeoutMs: 15_000 }).catch(() => undefined)
+      ? await $.process.run(['bash', '-lc', 'claude auth status'], { timeoutMs: 15_000 }).catch(() => undefined)
       : undefined
   const next = billingOf(setting, res?.exitCode === 0 ? res.stdout : undefined, { isCloud, hasKey })
   const cur = await read($, billing)
@@ -559,31 +565,32 @@ function nextPlan(tool: string, input: Record<string, unknown>, plan: PlanItem[]
 
 // The bottom-row bar: the share of the task list done, the open item pulsing each tick.
 // Without a list, a block sweeps back and forth while the turn runs.
+// `lead` and `rest` are drawn dim and `on` in colour, all as `█`: the desktop font breaks `░▒▓`.
 function progress(r: Run, t: number, cells: number) {
   const n = r.plan.length
   const isLive = r.status === 'running' || r.status === 'paused'
   const beat = Math.floor(t / 1000)
+  const cellsOf = (lead: number, on: number) => ({
+    lead: '█'.repeat(lead),
+    on: '█'.repeat(on),
+    rest: '█'.repeat(Math.max(0, cells - lead - on)),
+  })
   if (n === 0) {
-    if (!isLive) return { text: '█'.repeat(cells), label: r.status === 'finished' ? '100%' : '' }
+    if (!isLive) return { ...cellsOf(0, cells), label: r.status === 'finished' ? '100%' : '' }
     const span = 3
     const lap = (cells - span) * 2
     const at = lap > 0 ? beat % lap : 0
     const from = at <= cells - span ? at : lap - at
-    return {
-      text: '░'.repeat(from) + '█'.repeat(span) + '░'.repeat(Math.max(0, cells - from - span)),
-      label: `${r.steps.length} steps`,
-    }
+    return { ...cellsOf(from, span), label: `${r.steps.length} steps` }
   }
   const done = r.plan.filter(p => p.status === 'completed').length
   const half = r.plan.some(p => p.status === 'in_progress') ? 0.5 : 0
   const share = Math.min(1, (done + (isLive ? half : 0)) / n)
   const filled = Math.floor(share * cells)
-  const isPulse = isLive && half > 0 && filled < cells
+  // The open item's cell blinks: lit on even ticks, dim on odd ones.
+  const isLit = isLive && half > 0 && filled < cells && beat % 2 === 0
   return {
-    text:
-      '█'.repeat(filled) +
-      (isPulse ? (beat % 2 === 0 ? '▓' : '▒') : '') +
-      '░'.repeat(Math.max(0, cells - filled - (isPulse ? 1 : 0))),
+    ...cellsOf(0, filled + (isLit ? 1 : 0)),
     label: `${done}/${n} · ${Math.round(share * 100)}%`,
   }
 }
@@ -626,8 +633,8 @@ const bar = (pct: number, pace: number | undefined, cells: number) => {
   for (let i = 0; i < cells; i++) {
     const kind = i === mark ? 'mark' : i < filled ? 'used' : 'free'
     const last = runs.at(-1)
-    if (last && last.kind === kind) last.text += kind === 'used' ? '█' : '░'
-    else runs.push({ kind, text: kind === 'mark' ? '┃' : kind === 'used' ? '█' : '░', isUsed: i < filled })
+    if (last && last.kind === kind) last.text += '█'
+    else runs.push({ kind, text: kind === 'mark' ? '┃' : '█', isUsed: i < filled })
   }
   return runs
 }
@@ -812,7 +819,7 @@ function agentPlan(a: AgentRow, cells: number) {
   const filled = Math.round((done / plan.length) * cells)
   const current = plan.find(p => p.status === 'in_progress')?.content
   return {
-    bar: '█'.repeat(filled) + '░'.repeat(cells - filled),
+    bar: { filled: '█'.repeat(filled), empty: '█'.repeat(cells - filled) },
     label: `${done}/${plan.length}`,
     current: current ? oneLine(current, 48) : '',
   }
@@ -1000,16 +1007,61 @@ const hasGraph = atom(
   { shape: 'hasGraph-1' },
 )
 
+// Whether anything changed since the graph was built: without a change, Update is a dim label.
+const graphStale = atom(
+  { plugin: 'agent-monitor-pane', key: 'graphStale' } as const,
+  true,
+  { shape: 'graphStale-1' },
+)
+
+// The paths `git status` last listed, relative to the repository root.
+let changedPaths: string[] = []
+// Fields before the path in each `git status --porcelain=v2` line type.
+const STATUS_FIELDS: Record<string, number> = { '1': 8, '2': 9, u: 10, '?': 1 }
+
+const gitDirs = new Map<string, { top: string; gitDir: string } | null>()
+async function gitDirsOf($: EngineInterface, cwd: string) {
+  if (!gitDirs.has(cwd)) {
+    const res = await $.process
+      .run(['git', 'rev-parse', '--show-toplevel', '--absolute-git-dir'], { timeoutMs: 3_000 })
+      .catch(() => null)
+    const [top, gitDir] = res && res.exitCode === 0 ? res.stdout.trim().split('\n') : []
+    gitDirs.set(cwd, top && gitDir ? { top, gitDir } : null)
+  }
+  return gitDirs.get(cwd)
+}
+
+const mtimeOf = ($: EngineInterface, path: string) =>
+  $.fs.stat(path).then(s => s.mtimeMs).catch(() => 0)
+
+// Stale when HEAD moved (commit, checkout, pull, reset) or a changed file was written
+// after the graph. A file deleted without a commit is not seen.
+async function isGraphStale($: EngineInterface, cwd: string) {
+  const built = await mtimeOf($, `${graphOut(cwd)}/graph.json`)
+  const dirs = await gitDirsOf($, cwd)
+  if (!dirs) return true
+  if ((await mtimeOf($, `${dirs.gitDir}/logs/HEAD`)) > built) return true
+  for (const p of changedPaths) if ((await mtimeOf($, `${dirs.top}/${p}`)) > built) return true
+  return false
+}
 const GRAFT_LABEL = { init: 'Graft Init', update: 'Graft Update' } as const
 const GRAFT_RUNNING = { init: 'Initializing…', update: 'Updating…' } as const
 
+// This PC keeps graphify output outside the repo, per project folder name.
+function graphOut(cwd: string) {
+  return `D:/workspace/claude_doc/project/${cwd.split(/[\\/]/).filter(Boolean).at(-1)}/graphify-out`
+}
+
 async function graphExists($: EngineInterface, cwd: string) {
-  return $.fs.exists(`${cwd}/graphify-out/graph.json`).catch(() => false)
+  return $.fs.exists(`${graphOut(cwd)}/graph.json`).catch(() => false)
 }
 
 async function refreshGraph($: EngineInterface) {
-  const yes = await graphExists($, await $.session.cwd())
+  const cwd = await $.session.cwd()
+  const yes = await graphExists($, cwd)
   if ((await read($, hasGraph)) !== yes) await update($, hasGraph, () => yes)
+  const stale = !yes || (await isGraphStale($, cwd))
+  if ((await read($, graphStale)) !== stale) await update($, graphStale, () => stale)
 }
 
 // Without a graph, builds the code graph of the session's folder (`graphify update .`);
@@ -1019,9 +1071,10 @@ async function runGraft($: EngineInterface) {
   const cwd = await $.session.cwd()
   const mode = (await graphExists($, cwd)) ? 'update' : 'init'
   await update($, graftUpdate, (): GraftUpdate => ({ status: 'running', mode }))
-  // A login shell, so `graphify` is found on the person's own PATH.
+  // A Git Bash login shell (no zsh on Windows), so `graphify` is found on the person's own PATH.
   const res = await $.process
-    .run(['/bin/zsh', '-lc', mode === 'init' ? 'graphify update .' : 'graphify update'], {
+    // graphify writes manifest.json to ./graphify-out whatever GRAPHIFY_OUT says: move it out of the repo.
+    .run(['bash', '-lc', `export GRAPHIFY_OUT='${graphOut(cwd)}'; graphify update . && { [ ! -f graphify-out/manifest.json ] || mv -f graphify-out/manifest.json "$GRAPHIFY_OUT/"; rmdir graphify-out 2>/dev/null; true; }`], {
       cwd,
       timeoutMs: 600_000,
     })
@@ -1089,6 +1142,7 @@ async function refreshBranch($: EngineInterface) {
     let behind = 0
     let hasUpstream = false
     let changed = 0
+    const paths: string[] = []
     for (const line of res.stdout.split('\n')) {
       if (line.startsWith('# branch.head ')) name = line.slice(14).trim()
       else if (line.startsWith('# branch.oid ')) oid = line.slice(13).trim()
@@ -1099,8 +1153,13 @@ async function refreshBranch($: EngineInterface) {
           ahead = Number(m[1])
           behind = Number(m[2])
         }
-      } else if (line && !line.startsWith('#')) changed++
+      } else if (line && !line.startsWith('#')) {
+        changed++
+        const n = STATUS_FIELDS[line[0]]
+        if (n) paths.push(line.split(' ').slice(n).join(' ').split('\t')[0])
+      }
     }
+    changedPaths = paths
     if (name === '(detached)') name = `detached ${oid.slice(0, 7)}`
     if (name) next = { repo: await repoName($), name, ahead, behind, hasUpstream, changed }
   }
@@ -1774,10 +1833,12 @@ export const register: Register = (on, options) => {
       : 'no upstream'
     const state = b.changed ? `● ${b.changed} changed` : '✓ clean'
     const isRunning = gu.status === 'running'
+    // Button takes no disabled state: with nothing changed since the build, a dim label stands in.
+    const canGraft = mode === 'init' || (await read($, graphStale))
     // The button keeps its place on this row: a long branch name is cut instead.
     // The terminal draws a primary Button as `[ label ]`.
     const running = GRAFT_RUNNING[gu.mode ?? mode]
-    const buttonCells = isRunning ? running.length : GRAFT_LABEL[mode].length + 4
+    const buttonCells = isRunning ? running.length : GRAFT_LABEL[mode].length + (canGraft ? 4 : 0)
     const fixed =
       (b.repo !== '' ? b.repo.length + 1 : 0) + 4 + 1 + state.length + 1 + sync.length + 1 + buttonCells
     const name = clip(b.name, Math.max(4, e.props.bodyColumns - fixed))
@@ -1793,6 +1854,8 @@ export const register: Register = (on, options) => {
         </Box>
         {isRunning ? (
           <Text dimColor>{running}</Text>
+        ) : !canGraft ? (
+          <Text dimColor>{GRAFT_LABEL[mode]}</Text>
         ) : (
           <Button key={`graft-${mode}`} variant="primary" onPress={() => void runGraft($)}>
             {GRAFT_LABEL[mode]}
@@ -1993,7 +2056,8 @@ export const register: Register = (on, options) => {
                 {pl && (
                   <Text mono>
                     {`${pad}  `}
-                    <Text color={agentColor(a)}>{pl.bar}</Text>
+                    <Text color={agentColor(a)}>{pl.bar.filled}</Text>
+                    <Text dimColor>{pl.bar.empty}</Text>
                     <Text dimColor>{` ${pl.label}${pl.current ? ` · ${pl.current}` : ''}`}</Text>
                   </Text>
                 )}
@@ -2089,7 +2153,9 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" justifyContent="space-between" gap={1}>
           {bottom ? (
             <Text mono>
-              <Text color={status.color}>{bottom.text}</Text>
+              <Text dimColor>{bottom.lead}</Text>
+              <Text color={status.color}>{bottom.on}</Text>
+              <Text dimColor>{bottom.rest}</Text>
               {bottom.label !== '' && <Text dimColor>{` ${bottom.label}`}</Text>}
             </Text>
           ) : (
@@ -2205,7 +2271,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" justifyContent="space-between">
             <Text mono>
               <Text color={budColor}>{'█'.repeat(budCells)}</Text>
-              <Text dimColor>{'░'.repeat(limitCells - budCells)}</Text>
+              <Text dimColor>{'█'.repeat(limitCells - budCells)}</Text>
             </Text>
             <Text mono color={budColor}>{`${Math.round(budShare * 100)}% of ${usdShort(limit)}`}</Text>
           </Box>
@@ -2251,50 +2317,58 @@ export const register: Register = (on, options) => {
         </Box>
       )
 
-    // A dim `── Name ───` rule that opens each group of related sections.
-    const divider = (name: string) => (
-      <Text key={`group-${name}`} dimColor wrap="truncate-end">
-        {`── ${name} ${'─'.repeat(Math.max(2, width - name.length - 4))}`}
-      </Text>
-    )
-    // Sections that keep their height sit above the turn, so they stay put
-    // while it runs; the turn and Activity, which grow and shrink, follow.
-    const fixed = (
-      <Box flexDirection="column" gap={1}>
-        {divider('Cost & time')}
-        {spendView}
-        {todayView}
-        {divider('Context')}
-        {contextView}
-        {cacheView}
+    // One group of sections at a time, picked from the tab row; Activity's tab counts the running rows.
+    const shown = await read($, tab)
+    const tabs: { id: PaneTab; label: string }[] = [
+      { id: 'turn', label: 'Turn' },
+      { id: 'usage', label: 'Usage' },
+      { id: 'context', label: 'Context' },
+      { id: 'activity', label: runningRows ? `Activity ${runningRows}` : 'Activity' },
+    ]
+    const tabRow = (
+      <Box flexDirection="row" flexWrap="wrap" gap={1}>
+        {tabs.map(x => (
+          <Button
+            key={`tab-${x.id}`}
+            variant={x.id === shown ? 'primary' : 'secondary'}
+            onPress={() => void update($, tab, () => x.id)}
+          >
+            {x.label}
+          </Button>
+        ))}
       </Box>
     )
-    const activity = (toolsView || agentsView) && (
-      <Box flexDirection="column" gap={1}>
-        {divider('Activity')}
-        {toolsView}
-        {agentsView}
-      </Box>
-    )
+
+    if (shown !== 'turn') {
+      const body = {
+        usage: [usage, spendView, todayView],
+        context: [contextView, cacheView],
+        activity:
+          toolsView || agentsView
+            ? [toolsView, agentsView]
+            : [<Text dimColor>No tool calls or subagents yet.</Text>],
+      }[shown]
+      return page(
+        <Box flexDirection="column" gap={1}>
+          {tabRow}
+          {body}
+        </Box>,
+      )
+    }
 
     if (r.status === 'idle') {
       return page(
         <Box flexDirection="column" gap={1}>
-          {usage}
-          {fixed}
-          {divider('This turn')}
+          {tabRow}
           <Text weight="semibold">{model}</Text>
           <Text dimColor>Waiting for the next prompt.</Text>
-          {activity}
         </Box>,
       )
     }
 
     return page(
       <Box flexDirection="column" gap={1}>
-        {usage}
-        {fixed}
-        {divider('This turn')}
+        {tabRow}
         <Box flexDirection="row" justifyContent="space-between">
           <Text weight="semibold">{model}</Text>
           <Box flexDirection="row" gap={1}>
@@ -2377,7 +2451,6 @@ export const register: Register = (on, options) => {
             {done.length}/{r.steps.length}
           </Text>
         </Box>
-        {activity}
       </Box>,
     )
   })

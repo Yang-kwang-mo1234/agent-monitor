@@ -62,6 +62,13 @@ const engine = (on: any, state: State) => {
   return clock
 }
 
+// Picks one of the pane's tabs; the pick holds for the mounts after it.
+const showTab = async ($: any, id: string) => {
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ plugin: 'agent-monitor-pane', key: `tab-${id}` })
+  await ui.unmount()
+}
+
 test('a run shows its steps, cost and status', { options: { billing: 'metered' } }, async ($, on) => {
   const state: State = { t: 1_000, usd: 0.012, aborted: [] as string[] }
   engine(on, state)
@@ -160,6 +167,7 @@ test('the 5-hour and weekly windows show their pace and reset times', async ($, 
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'usage')
   await $.session.measure({
     context: {} as any,
     rateLimits: [
@@ -183,7 +191,7 @@ test('the 5-hour and weekly windows show their pace and reset times', async ($, 
   await ui.unmount()
 })
 
-test('Usage sits at the top of the pane, above the model, idle and while running', async ($, on) => {
+test('The pane opens on Turn, and each tab shows only its own sections', async ($, on) => {
   const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
   engine(on, state)
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
@@ -195,44 +203,31 @@ test('Usage sits at the top of the pane, above the model, idle and while running
     rateLimits: [{ kind: 'five_hour', percentUsed: 40, resetsAt: '2026-10-31T12:00:00Z' }],
     changed: ['rateLimits'],
   })
-  const order = async () => {
-    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-    const texts = (await ui.findAll({ type: 'Text', text: /^(5-hour|Claude Opus 5\.5)$/ })).map(
-      n => n.text,
-    )
-    await ui.unmount()
-    return texts.filter((s, i) => texts.indexOf(s) === i)
-  }
-
-  expect(await order()).toEqual(['5-hour', 'Claude Opus 5.5'])
-
-  await $.turn.start({ text: 'ship it', turnId: 'turn-1' })
-  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'Listing files' } as any)
-  expect(await order()).toEqual(['5-hour', 'Claude Opus 5.5'])
-})
-
-test('Fixed-height groups sit above the turn, Activity below it, each behind a divider', async ($, on) => {
-  const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
-  engine(on, state)
-  on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
-  on('tool.call', () => ({ result: {} }))
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const order = async () => {
+  const shown = async () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
     const texts = (
-      await ui.findAll({ type: 'Text', text: /^(── \S.*|Claude Opus 5\.5|Spend|Worked today|Context)$/ })
-    ).map(n => n.text.replace(/ ─+$/, ''))
+      await ui.findAll({
+        type: 'Text',
+        text: /^(5-hour|Claude Opus 5\.5|Spend|Worked today|Context|Prompt cache|Tools|No tool calls or subagents yet\.)$/,
+      })
+    ).map(n => n.text)
     await ui.unmount()
     return texts.filter((s, i) => texts.indexOf(s) === i)
   }
 
-  const expected = ['── Cost & time', 'Spend', 'Worked today', '── Context', 'Context', '── This turn', 'Claude Opus 5.5']
-  expect(await order()).toEqual(expected)
+  expect(await shown()).toEqual(['Claude Opus 5.5'])
+  await showTab($, 'usage')
+  expect(await shown()).toEqual(['5-hour', 'Spend', 'Worked today'])
+  await showTab($, 'context')
+  expect(await shown()).toEqual(['Context', 'Prompt cache'])
+  await showTab($, 'activity')
+  expect(await shown()).toEqual(['No tool calls or subagents yet.'])
 
   await $.turn.start({ text: 'ship it', turnId: 'turn-1' })
   await $.tool.call({ tool: 'Bash', command: 'ls', description: 'Listing files' } as any)
-  expect(await order()).toEqual([...expected, '── Activity'])
+  expect(await shown()).toEqual(['Tools'])
+  await showTab($, 'turn')
+  expect(await shown()).toEqual(['Claude Opus 5.5'])
 })
 
 const measureContext = (state: State, percent: number) => {
@@ -257,6 +252,7 @@ test('context at 80% sends one handoff prompt, and re-arms after it drops', asyn
   on('ui.toast', () => ({ value: undefined }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'context')
   await $.session.measure(measureContext(state, 62))
   expect(prompts.length).toBe(0)
 
@@ -298,6 +294,7 @@ test('the Handoff button sends the prompt; Auto off stops the automatic one', as
   })
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'context')
   await $.session.measure(measureContext(state, 40))
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -325,6 +322,7 @@ test('a subagent shows with its model, steps and cost, and expands to its messag
   }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'activity')
   await $.turn.start({ text: 'audit', turnId: 'turn-a' })
   await $.agent.spawn({
     tool_use_id: 'tu1',
@@ -339,6 +337,7 @@ test('a subagent shows with its model, steps and cost, and expands to its messag
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /Find callers/ }))?.text).toBe('● Find callers')
+  expect((await ui.find({ type: 'Button', key: 'tab-activity' }))?.text).toBe('Activity 1')
   expect((await ui.find({ type: 'Text', text: /Sonnet 5\.5/ }))?.text).toBe(' (Sonnet 5.5)  0s')
   expect((await ui.find({ type: 'Text', text: /1 tools/ }))?.text).toBe(
     '  sub · 1 tools · searching describe(',
@@ -385,6 +384,7 @@ test('a subagent row shows its task list, waiting, and its result', async ($, on
   on('session.messages', () => ({ value: [{ role: 'user', text: 'audit the hooks' }] as any }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'activity')
   await $.turn.start({ text: 'audit', turnId: 'turn-b' })
   await $.agent.spawn({
     tool_use_id: 'tu2',
@@ -406,7 +406,7 @@ test('a subagent row shows its task list, waiting, and its result', async ($, on
   } as any)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /1\/3/ }))?.text).toBe('  ███░░░░░ 1/3 · Check the tests')
+  expect((await ui.find({ type: 'Text', text: /1\/3/ }))?.text).toBe('  ████████ 1/3 · Check the tests')
   await ui.unmount()
 
   stand = 'waiting'
@@ -440,6 +440,7 @@ test('a background Bash command gets a shell row', async ($, on) => {
   }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'activity')
   await $.turn.start({ text: 'serve', turnId: 'turn-s' })
   await $.tool.call({
     tool: 'Bash',
@@ -477,6 +478,7 @@ test('a foreground codex review shows its model, then its findings', async ($, o
   })
 
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  await showTab($, 'activity')
   await $.turn.start({ text: 'review', turnId: 'turn-r' })
   await $.tool.call({
     tool: 'Bash',
@@ -565,7 +567,8 @@ test('the bottom bar follows the task list, and sweeps while a turn has none', a
   on('tool.call', () => ({ result: {} }))
   const bar = async () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-    const text = (await ui.find({ type: 'Text', text: /^[█▓▒░]+$/ }))?.text
+    // Lit and dim cells are all `█`: the runs, in order, show where the lit block is.
+    const text = (await ui.findAll({ type: 'Text', text: /^█+$/ })).map((n: any) => n.text).join('|')
     const label = (await ui.find({ type: 'Text', text: /^ (\d+ steps|\d+\/\d+ · \d+%)$/ }))?.text
     await ui.unmount()
     return { text, label }
@@ -619,6 +622,7 @@ test('worked today is the union of every session: time worked at once counts onc
   }
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'usage')
   expect(store.has('worked:2026-08-01:old')).toBe(false)
   expect(store.has(`worked:${ymd(noon)}:legacy`)).toBe(false)
   // 11:30-12:00 so far (the other session's span is clipped to now)
@@ -655,6 +659,7 @@ test('another session running now counts live, and up to its last heartbeat once
   }
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'usage')
   expect(await total()).toBe('20m')
   await clock.advance(5 * 60_000) // no heartbeat for 5 minutes: that session stopped at noon
   expect(await total()).toBe('20m')
@@ -664,7 +669,7 @@ test('another session running now counts live, and up to its last heartbeat once
 // returned as the git read's result for a `process.run` hook to give back.
 const releases = (on: any, installed: string, latest: string) => {
   on('fs.read', (_: unknown, e: any) =>
-    e.path.endsWith('.claude-plugin/plugin.json') ? { value: JSON.stringify({ version: installed }) } : undefined,
+    e.path.replace(/\\/g, '/').endsWith('.claude-plugin/plugin.json') ? { value: JSON.stringify({ version: installed }) } : undefined,
   )
   return (argv: readonly string[]) =>
     argv[2]?.includes('FETCH_HEAD:pane/.claude-plugin/plugin.json')
@@ -698,7 +703,7 @@ test('Update pulls the latest pane and says a new session applies it', async ($,
     ran.push(e.argv)
     const res = latest(e.argv)
     if (res) return { value: res }
-    const isUpdate = e.argv[0] === '/bin/zsh'
+    const isUpdate = e.argv[0] === 'bash'
     return {
       value: {
         exitCode: isUpdate ? 0 : 1,
@@ -715,7 +720,7 @@ test('Update pulls the latest pane and says a new session applies it', async ($,
   expect((await ui.find({ type: 'Text', text: /^v0\.2\.0/ }))?.text).toBe('v0.2.0 → v0.2.1')
   await ui.press({ plugin: 'agent-monitor-pane', key: 'self-update' })
 
-  const update = ran.find(a => a[0] === '/bin/zsh' && a[2]?.includes('plugin update'))
+  const update = ran.find(a => a[0] === 'bash' && a[2]?.includes('plugin update'))
   expect(update?.[2]).toContain('claude plugin marketplace update agent-monitor')
   expect(update?.[2]).toContain('claude plugin update agent-monitor-pane@agent-monitor')
   expect((await ui.find({ type: 'Text', text: /new session/ }))?.text).toBe(
@@ -732,6 +737,11 @@ const gitFor = (name: string) => (argv: readonly string[]) => {
   if (argv[1] === 'rev-parse') return ok('/repo\n')
   return ok(['# branch.oid 19a9f6e0000', `# branch.head ${name}`, '# branch.upstream origin/x', '# branch.ab +0 -0'].join('\n'))
 }
+
+// The graph lives outside the repo; the engine may hand paths over with backslashes.
+const GRAPH_OUT = 'D:/workspace/claude_doc/project/repo/graphify-out'
+const GRAFT_SH = `export GRAPHIFY_OUT='${GRAPH_OUT}'; graphify update .`
+const isGraph = (path: string) => path.replace(/\\/g, '/') === `${GRAPH_OUT}/graph.json`
 
 const BAND = (bodyColumns: number) =>
   ({
@@ -808,10 +818,10 @@ test('Graft Update runs graphify update in the session folder and says what chan
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('fs.exists', (_: unknown, e: any) => ({ value: e.path === '/repo/graphify-out/graph.json' }))
+  on('fs.exists', (_: unknown, e: any) => ({ value: isGraph(e.path) }))
   on('process.run', (_: unknown, e: any) => {
     ran.push({ argv: e.argv, cwd: e.init?.cwd })
-    const isGraft = e.argv[0] === '/bin/zsh' && e.argv[2] === 'graphify update'
+    const isGraft = e.argv[0] === 'bash' && e.argv[2]?.includes('graphify update .')
     return {
       value: isGraft
         ? {
@@ -829,8 +839,8 @@ test('Graft Update runs graphify update in the session folder and says what chan
   const band = await $.ui.mount(BAND(100))
   await band.press({ plugin: 'agent-monitor-pane', key: 'graft-update' })
 
-  const graft = ran.find(r => r.argv[2] === 'graphify update')
-  expect(graft?.argv).toEqual(['/bin/zsh', '-lc', 'graphify update'])
+  const graft = ran.find(r => r.argv[2]?.includes('graphify update .'))
+  expect(graft?.argv[2]).toStartWith(GRAFT_SH)
   expect(graft?.cwd).toBe('/repo')
   expect(toasts.at(-1)).toBe('✓ Graft Update: Rebuilt: 72 nodes, 85 edges, 7 communities')
   expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeTruthy()
@@ -854,10 +864,10 @@ test('Graft Init builds the first graph with graphify update . and then turns in
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('fs.exists', (_: unknown, e: any) => ({ value: built && e.path === '/repo/graphify-out/graph.json' }))
+  on('fs.exists', (_: unknown, e: any) => ({ value: built && isGraph(e.path) }))
   on('process.run', (_: unknown, e: any) => {
     ran.push({ argv: e.argv, cwd: e.init?.cwd })
-    const isGraft = e.argv[0] === '/bin/zsh' && e.argv[2]?.startsWith('graphify update')
+    const isGraft = e.argv[0] === 'bash' && e.argv[2]?.includes('graphify update .')
     if (isGraft) built = true
     return {
       value: isGraft
@@ -877,12 +887,57 @@ test('Graft Init builds the first graph with graphify update . and then turns in
   expect((await band.find({ type: 'Button', key: 'graft-init' }))?.text).toBe('Graft Init')
   await band.press({ plugin: 'agent-monitor-pane', key: 'graft-init' })
 
-  const init = ran.find(r => r.argv[2]?.startsWith('graphify update'))
-  expect(init?.argv).toEqual(['/bin/zsh', '-lc', 'graphify update .'])
+  const init = ran.find(r => r.argv[2]?.includes('graphify update .'))
+  expect(init?.argv[2]).toStartWith(GRAFT_SH)
   expect(init?.cwd).toBe('/repo')
   expect(toasts.at(-1)).toBe('✓ Graft Init: Rebuilt: 72 nodes, 85 edges, 7 communities')
   expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeTruthy()
   expect(await band.find({ type: 'Button', key: 'graft-init' })).toBeFalsy()
+  await band.unmount()
+})
+
+// The graph built at 2000; HEAD last moved at 1000; one changed file, written at `fileMtime`.
+async function graftBand($: any, on: any, fileMtime: number) {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  // The engine's own row above the prompt, beneath the plugin.
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine row</Text>
+  })
+  const git = gitFor('main')
+  const ok =(stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
+  const mtimes: Record<string, number> = {
+    [`${GRAPH_OUT}/graph.json`]: 2_000,
+    '/repo/.git/logs/HEAD': 1_000,
+    '/repo/src/a.ts': fileMtime,
+  }
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('fs.exists', (_: unknown, e: any) => ({ value: isGraph(e.path) }))
+  on('fs.stat', (_: unknown, e: any) => {
+    const path = e.path.replace(/\\/g, '/').replace(/^[A-Z]:(?=\/repo)/, '')
+    return { value: { kind: 'file', size: 1, mtimeMs: mtimes[path] ?? 0, isLink: false } }
+  })
+  on('process.run', (_: unknown, e: any) => {
+    if (e.argv[1] === 'rev-parse' && e.argv.includes('--absolute-git-dir')) return { value: ok('/repo\n/repo/.git\n') }
+    if (e.argv[1] === '--no-optional-locks')
+      return { value: ok(`${git(e.argv)!.stdout}\n1 .M N... 100644 100644 100644 abc abc src/a.ts`) }
+    return { value: git(e.argv) ?? { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  return $.ui.mount(BAND(100))
+}
+
+test('Graft Update is a dim label while nothing changed since the graph was built', async ($, on) => {
+  const band = await graftBand($, on, 1_500)
+  expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeFalsy()
+  expect((await band.find({ type: 'Text', text: /^Graft Update$/ }))?.text).toBe('Graft Update')
+  await band.unmount()
+})
+
+test('Graft Update is a button once a changed file is newer than the graph', async ($, on) => {
+  const band = await graftBand($, on, 3_000)
+  expect(await band.find({ type: 'Button', key: 'graft-update' })).toBeTruthy()
   await band.unmount()
 })
 
@@ -913,6 +968,7 @@ test('a failed tool call shows its error under the step and in Tools', async ($,
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /^✗ Running tests$/ }))?.text).toBe('✗ Running tests')
   expect((await ui.find({ type: 'Text', text: /^ {2}Exit code 1$/ }))?.text).toBe('  Exit code 1')
+  await ui.press({ plugin: 'agent-monitor-pane', key: 'tab-activity' })
   expect((await ui.find({ type: 'Text', text: /^2 calls/ }))?.text).toBe('2 calls · 1 failed')
   expect((await ui.find({ type: 'Text', text: /Bash 1× .*\(1✗\)/ }))).toBeDefined()
   await ui.unmount()
@@ -923,6 +979,7 @@ test('billing from the setting: a subscription marks costs as estimates', { opti
   engine(on, state)
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'usage')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /^Subscription/ }))?.text).toBe(
     'Subscription · API-price estimate, not charged',
@@ -956,6 +1013,7 @@ test(
     })
 
     await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+    await showTab($, 'usage')
     await $.turn.start({ text: 'work', turnId: 'turn-g' })
 
     state.usd = 0.85
@@ -1009,6 +1067,7 @@ test('a subagent spawned by a subagent sits under it, and opens to the task it w
   on('session.messages', () => ({ value: [] as any }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'activity')
   await $.turn.start({ text: 'plan', turnId: 'turn-n' })
   await $.agent.spawn(spawn('p'))
   await $.agent.spawn(spawn('c', { parentAgentId: 'p' }))
@@ -1057,6 +1116,7 @@ test('the 7-day line sums the past six days and today, time and cost', async ($,
   on('store.keys', () => ({ value: [...store.keys()] }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'usage')
   await $.turn.start({ text: 'work', turnId: 'turn-7' })
   state.usd = 1.25
   state.t = noon + 30 * 60_000
@@ -1125,6 +1185,7 @@ test('+N more counts only the rows that could have been listed', async ($, on) =
   }
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'activity')
   for (let i = 0; i < 7; i++) await spawn()
   for (let i = 1; i <= 7; i++) {
     await $.turn.complete({ agentId: `a${i}`, answer: 'ok', durationMs: 10, isAborted: false, turnId: `t${i}`, reason: 'answer' } as any)

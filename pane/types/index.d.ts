@@ -222,6 +222,9 @@ export type ToolLog = {
   failures: ToolFailure[]
 }
 
+// The pane's tab shown: the turn, usage and spend, context, or tools and subagents.
+export type PaneTab = 'turn' | 'usage' | 'context' | 'activity'
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-monitor-pane': {
@@ -235,12 +238,14 @@ declare module 'claude-code' {
       handoff: Shaped<Handoff>
       agents: Shaped<AgentRow[]>
       selected: Shaped<string | null>
+      tab: Shaped<PaneTab>
       branch: Shaped<Branch | null>
       release: Shaped<Release>
       today: Shaped<Today>
       selfUpdate: Shaped<SelfUpdate>
       graftUpdate: Shaped<GraftUpdate>
       hasGraph: Shaped<boolean>
+      graphStale: Shaped<boolean>
       billing: Shaped<Billing>
       budget: Shaped<Budget>
       tools: Shaped<ToolLog>

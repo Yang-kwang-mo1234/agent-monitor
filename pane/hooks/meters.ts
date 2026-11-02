@@ -10,7 +10,8 @@ const PALETTE = ['#7aa2f7', '#7dcfff', '#bb9af7', '#9ece6a', '#e0af68', '#f7768e
 const MESSAGES = '#d97757' // the row that grows, in the accent color
 const FREE = '#808080'
 const BUFFER = '#808080'
-export const GLYPH = { used: '█', free: '─', buffer: '░' } as const
+// Buffer is a grey `█`, not `░`: the desktop font breaks shade characters.
+export const GLYPH = { used: '█', free: '─', buffer: '█' } as const
 export const SPLIT = '   '
 
 // The breakdown's threshold leaves out CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; auto-compaction applies it
@@ -204,7 +205,7 @@ export function cacheLine(c: CacheState, ttl: CacheTtl, now: number): CacheLine 
     return {
       isWarm: true,
       head: `● ${ttl} · ${countdown(left)} left`,
-      bar: { filled: '█'.repeat(filled), empty: '░'.repeat(BAR_CELLS - filled) },
+      bar: { filled: '█'.repeat(filled), empty: '█'.repeat(BAR_CELLS - filled) },
       color: left < ttlMs * WARN_SHARE ? 'yellow' : 'green',
       details,
     }
