@@ -80,7 +80,7 @@ claude plugin install agent-monitor-pane --marketplace Yang-kwang-mo1234/agent-m
 - 브랜치 이름이 길면 버튼이 다음 줄로 밀리지 않도록 이름 뒤쪽을 `...`으로 자릅니다.
 - [graphify](https://github.com/Graphify-Labs/graphify) CLI가 필요합니다: `uv tool install graphifyy`
 
-- `/monitor`: 닫은 패널을 다시 엽니다.
+- `/agent-monitor`: 패널이 닫혀 있으면 엽니다. 이미 열려 있으면 아무것도 하지 않습니다.
 - **Pause**는 다음 도구 호출 직전에 Resume / Cancel을 묻습니다. **Cancel**은 실행 중인 턴을 바로 끊습니다.
 
 ### switchboard 설정 (선택)

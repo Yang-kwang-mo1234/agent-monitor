@@ -1362,8 +1362,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'monitor',
-      description: 'Open the Agent Monitor pane',
+      name: 'agent-monitor',
+      description: 'Open the Agent Monitor pane if it is closed',
     })
     void $.ui.open({ id: PANE, title: TITLE })
     const usage = await $.session.usage()
@@ -1612,7 +1612,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'monitor' }, async $ => {
+  // Opens the pane only while it is closed; an open one is left as it is.
+  on('command.run', { command: 'agent-monitor' }, async $ => {
+    if ((await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)) return {}
     await $.ui.open({ id: PANE, title: TITLE })
 
     return { text: 'Agent Monitor pane opened.' }

@@ -14,7 +14,7 @@ const PANE = {
   },
 } as const
 
-type State = { t: number; usd: number; aborted: string[]; pct?: number }
+type State = { t: number; usd: number; aborted: string[]; pct?: number; opens?: string[] }
 
 // /context's breakdown at `pct` of a 200k window: 20k system prompt, the rest messages.
 const breakdown = (pct: number) => {
@@ -35,8 +35,11 @@ const breakdown = (pct: number) => {
 }
 
 const engine = (on: any, state: State) => {
-  on('command.register', () => ({ value: { command: 'monitor' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', () => ({ value: { command: 'agent-monitor' } }))
+  on('ui.open', (_: unknown, e: any) => {
+    state.opens?.push(e.id)
+    return { value: { isPlaced: true } }
+  })
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: 'Claude Opus 5.5' }))
   on('session.usage', (_: unknown, e: any) => ({
@@ -1286,4 +1289,20 @@ test('the branch poll asks git for status without optional locks', async ($, on)
   const status = calls.filter(a => a[0] === 'git' && a.includes('status'))
   expect(status.length).toBeGreaterThan(0)
   for (const a of status) expect(a.slice(0, 3)).toEqual(['git', '--no-optional-locks', 'status'])
+})
+
+test('/agent-monitor opens a closed pane and leaves an open one alone', async ($, on) => {
+  const opens: string[] = []
+  engine(on, { t: 1_000, usd: 0, aborted: [] as string[], opens })
+  let panes: { id: string; title: string; isShown: boolean; isFocused: boolean; isPlaced: boolean }[] = []
+  on('ui.panes', () => ({ value: panes }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  opens.length = 0
+
+  expect((await $.command.run({ command: 'agent-monitor', args: '' })).text).toBe('Agent Monitor pane opened.')
+  expect(opens).toEqual(['agent-monitor'])
+
+  panes = [{ id: 'agent-monitor', title: 'Agent Monitor', isShown: true, isFocused: false, isPlaced: true }]
+  expect((await $.command.run({ command: 'agent-monitor', args: '' })).text).toBeUndefined()
+  expect(opens).toEqual(['agent-monitor'])
 })
