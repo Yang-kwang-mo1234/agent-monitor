@@ -158,7 +158,7 @@ const selected = atom(
 )
 const tab = atom(
   { plugin: 'agent-monitor-pane', key: 'tab' } as const,
-  'turn' as PaneTab,
+  'usage' as PaneTab,
   { shape: 'tab-2' },
 )
 

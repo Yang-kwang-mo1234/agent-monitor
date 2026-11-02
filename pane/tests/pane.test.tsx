@@ -78,6 +78,7 @@ test('a run shows its steps, cost and status', { options: { billing: 'metered' }
   })
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'turn')
   await $.turn.start({ text: 'ship v3.2.0', turnId: 'turn-1' })
   await $.tool.call({
     tool: 'Bash',
@@ -113,6 +114,7 @@ test('Cancel aborts the running turn and reports Cancelled', async ($, on) => {
   engine(on, state)
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'turn')
   await $.turn.start({ text: 'long job', turnId: 'turn-2' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -149,6 +151,7 @@ test('Pause asks before the next tool call, and Cancel there denies it', async (
   )
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'turn')
   await $.turn.start({ text: 'job', turnId: 'turn-3' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -191,7 +194,7 @@ test('the 5-hour and weekly windows show their pace and reset times', async ($, 
   await ui.unmount()
 })
 
-test('The pane opens on Turn, and each tab shows only its own sections, Usage holding Context', async ($, on) => {
+test('The pane opens on Usage, and each tab shows only its own sections, Usage holding Context', async ($, on) => {
   const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
   engine(on, state)
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
@@ -215,9 +218,9 @@ test('The pane opens on Turn, and each tab shows only its own sections, Usage ho
     return texts.filter((s, i) => texts.indexOf(s) === i)
   }
 
-  expect(await shown()).toEqual(['Claude Opus 5.5'])
-  await showTab($, 'usage')
   expect(await shown()).toEqual(['5-hour', 'Spend', 'Worked today', 'Context', 'Prompt cache'])
+  await showTab($, 'turn')
+  expect(await shown()).toEqual(['Claude Opus 5.5'])
   await showTab($, 'activity')
   expect(await shown()).toEqual(['No tool calls or subagents yet.'])
 
@@ -1011,6 +1014,7 @@ test('a failed tool call shows its error under the step and in Tools', async ($,
   )
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'turn')
   await $.turn.start({ text: 'test it', turnId: 'turn-t' })
   await $.tool.call({ tool: 'Read', file_path: '/a/b.ts' } as any)
   await $.tool.call({ tool: 'Bash', command: 'npm test', description: 'Running tests' } as any)
@@ -1138,6 +1142,7 @@ test('a turn an API error ended says which error', async ($, on) => {
   on('classic.StopFailure', () => ({}))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'turn')
   await $.turn.start({ text: 'job', turnId: 'turn-e' })
   await $.classic.StopFailure({ error: 'rate_limit' } as any)
   await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'turn-e', reason: 'error' })
