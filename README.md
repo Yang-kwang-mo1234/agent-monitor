@@ -52,7 +52,7 @@ claude plugin install agent-monitor-pane --marketplace Yang-kwang-mo1234/agent-m
 
 ### 패널에 보이는 것
 
-맨 위 탭 줄(**Usage · filetree · Turn · Mission · Activity**)에서 한 번에 한 묶음씩 봅니다. Usage 탭은 Usage·Spend·Worked today·Context·Prompt cache, Turn 탭은 실행 카드, Mission 탭은 에이전트 트리, Activity 탭은 Tools와 Agents를 보여 줍니다. filetree 탭은 [filetree](https://github.com/data-goblin/claude-code-filetree) 플러그인의 패널을 엽니다(설치되어 있어야 함).
+맨 위 탭 줄(**Usage · filetree · Turn · Activity**)에서 한 번에 한 묶음씩 봅니다. Usage 탭은 Usage·Spend·Worked today·Context·Prompt cache, Turn 탭은 실행 카드, Activity 탭은 Tools와 Agents를 보여 줍니다. filetree 탭은 [filetree](https://github.com/data-goblin/claude-code-filetree) 플러그인의 패널을 엽니다(설치되어 있어야 함).
 
 위에서부터 순서대로 나옵니다. 높이가 일정한 섹션(Usage, Cost & time, Context)이 위에, 실행에 따라 길이가 바뀌는 실행 카드와 Activity가 아래에 옵니다. Usage 아래 섹션은 흐린 구분선(`── Cost & time ──`, `── Context ──`, `── This turn ──`, `── Activity ──`)으로 같은 성격끼리 묶입니다. Activity 구분선은 Tools나 Agents가 있을 때만 나옵니다.
 
@@ -64,7 +64,6 @@ claude plugin install agent-monitor-pane --marketplace Yang-kwang-mo1234/agent-m
 | Context | 컨텍스트를 카테고리별 색 막대와 범례로 표시, compact 지점, 날씨 표시(☀ → ↯), 최근 턴 sparkline. **Handoff now** 버튼과 80% 자동 handoff(**Auto** 토글) |
 | Prompt cache | 캐시 남은 시간(5m/1h), 적중률, 미스 횟수. 만료되면 다음 메시지에서 다시 캐시할 토큰 수 |
 | 실행 카드 | 모델, 이번 실행 비용(구독이면 `≈`로 추정치 표시), 상태(API 오류로 끝나면 `Failed · rate limited`처럼 이유까지), 현재 단계와 타이머(승인을 물은 단계는 승인 후 그 도구가 끝날 때까지 `Asked for approval · …`. auto 모드처럼 사람에게 묻지 않는 모드에서는 표시하지 않음), 단계 막대, 최근 3단계, **Pause / Cancel**. 실패한 단계는 ✗와 함께 오류 첫 줄이 아래에 나옵니다 |
-| Mission | 이번 턴의 main, 서브에이전트, 각 도구 호출을 실시간 트리로 표시(`◆ main` → `● 서브에이전트` → `◉ read: a.ts → b.ts  ×2`). 같은 종류의 도구 호출이 이어지면 한 줄로 접고, 실행 중은 강조색, 실패는 빨간색으로 나옵니다. 백그라운드 서브에이전트는 다음 턴에도 이어서 보입니다. 할 일 목록 갱신 같은 내부 도구는 빠집니다 |
 | Tools | 이 세션의 도구 호출 수와 실패 수, 시간을 가장 많이 쓴 도구 3개(`Bash 12× 41.2s (1✗)`), 최근 실패 3건과 그 이유. 서브에이전트의 도구 호출도 함께 셉니다 |
 | Agents | 서브에이전트·백그라운드 셸·코드 리뷰를 한 줄씩 표시. 모델, 경과 시간, 도구 수, 현재 작업, switchboard 모델 선택과 비용, codex review findings. 서브에이전트는 자기 할 일 목록의 진행 막대(`2/4 · 지금 단계`), 대기(◐ waiting)·유휴(○ idle) 상태, 실패한 도구 수, 끝나면 결과 한 줄(`↳ …`)도 보여 줍니다. 서브에이전트가 띄운 서브에이전트는 부모 아래에 `└`로 들여 씁니다. 행을 누르면 받은 작업(`given:`), 토큰(입력·출력·캐시 읽기), 할 일 목록, 메시지나 출력, 결과 전체가 펼쳐집니다 |
 | 아래 줄 | 왼쪽에 에이전트 진행율 바, 오른쪽에 설치된 패널 버전과 **Update** 버튼. 진행율은 에이전트의 할 일 목록에서 끝난 비율이고(`2/4 · 50%`), 목록이 없으면 작업 중에 블록이 좌우로 오갑니다. 끝나지 않은 할 일 목록은 다음 턴에도 이어지고, 다 끝난 목록은 새 턴에서 비워집니다. Update는 마켓플레이스에 새 버전이 있을 때만 눌리고(`v0.2.5 → v0.2.6`), 없으면 흐리게 꺼져 있습니다. 30분마다 다시 확인합니다 |
@@ -127,7 +126,7 @@ claude plugin test pane
 claude --plugin-dir pane
 ```
 
-context-bar, token-weather, cache-clock, agent-radar, switchboard, review-watch, mission-control(Who 뷰만)은 [hamzafer/claude-code-mods](https://github.com/hamzafer/claude-code-mods)의 mod를 패널에 맞게 합친 것입니다. `pane/hooks/route.ts`와 `pane/hooks/watch.ts`는 원본 파일을 그대로 가져왔고, `pane/hooks/mission.ts`는 mission-control의 `tree.ts`를 고쳐 가져왔습니다. mission-control의 Code 뷰(코드 맵)는 headless Chrome과 이미지를 그리는 터미널이 필요해서 넣지 않았습니다.
+context-bar, token-weather, cache-clock, agent-radar, switchboard, review-watch는 [hamzafer/claude-code-mods](https://github.com/hamzafer/claude-code-mods)의 mod를 패널에 맞게 합친 것입니다. `pane/hooks/route.ts`와 `pane/hooks/watch.ts`는 원본 파일을 그대로 가져왔습니다.
 
 Tools 섹션, 과금 방식 구분, 예산 단계, 서브에이전트 트리와 받은 작업 표시, 승인 대기와 API 오류 표시, 7일 추세는 [flightdeckhq/flightdeck](https://github.com/flightdeckhq/flightdeck)(Apache-2.0)의 아이디어를 패널에 맞게 새로 구현한 것입니다(`pane/hooks/spend.ts`). 코드는 가져오지 않았습니다.
 

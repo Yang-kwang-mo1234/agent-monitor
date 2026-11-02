@@ -10,7 +10,6 @@ import type {
   DayTotal,
   GraftUpdate,
   Handoff,
-  MissionNode,
   PaneTab,
   PlanItem,
   RateLimit,
@@ -25,15 +24,6 @@ import type {
   Today,
 } from '../types'
 import { BAR_H, barSvg, barView } from './bar'
-import {
-  MISSION_SKIP,
-  missionCap,
-  missionClose,
-  missionLabel,
-  missionLines,
-  missionSummary,
-  missionTurn,
-} from './mission'
 import {
   GLYPH,
   HISTORY,
@@ -171,19 +161,6 @@ const tab = atom(
   'usage' as PaneTab,
   { shape: 'tab-2' },
 )
-
-// mission-control: the main loop, its subagents and their tool calls, for the Mission tab.
-const mission = atom(
-  { plugin: 'agent-monitor-pane', key: 'mission' } as const,
-  [] as MissionNode[],
-  { shape: 'mission-1' },
-)
-const missionAdd = ($: EngineInterface, node: MissionNode) =>
-  update($, mission, list => missionCap([...list, node]))
-const missionEnd = ($: EngineInterface, id: string, failed: boolean, at: number) =>
-  update($, mission, list =>
-    list.map(n => (n.id === id && n.status === 'running' ? { ...n, status: failed ? 'failed' : 'done', end: at } : n)),
-  )
 
 // How the session is billed, read once at session start.
 const billing = atom(
@@ -696,7 +673,6 @@ const STATUS: Record<RunStatus, { text: string; color: string }> = {
 
 // --- agents (agent-radar + switchboard) -----------------------------------
 
-const MISSION_ROWS = 60 // the Mission tab's newest tree lines
 const SHOW_DONE_MS = 30_000 // a finished row stays in the list this long
 const AGENT_ROWS = 6
 const AGENT_LIMIT = 40
@@ -1483,20 +1459,6 @@ export const register: Register = (on, options) => {
       },
     }
     await update($, agents, list => [row, ...list.filter(a => a.id !== id)].slice(0, AGENT_LIMIT))
-    await update($, mission, list =>
-      missionCap([
-        ...list.filter(n => n.id !== id),
-        {
-          id,
-          parent: e.parentAgentId && list.some(n => n.id === e.parentAgentId) ? e.parentAgentId : 'main',
-          kind: 'agent',
-          label: row.description,
-          family: 'agent',
-          status: 'running',
-          start: row.startedAt,
-        },
-      ]),
-    )
     return res
   })
 
@@ -1683,7 +1645,6 @@ export const register: Register = (on, options) => {
       costAtStart: cost,
       cost,
     }))
-    await update($, mission, list => missionTurn(list, trim(e.text, 50), t))
     await update($, now, () => t)
     await startWorking($, t).catch(() => {})
 
@@ -1700,27 +1661,9 @@ export const register: Register = (on, options) => {
         list.map(a => (a.id === id ? { ...a, tools: a.tools + 1, last: line } : a)),
       )
       const began = await $.clock.now()
-      const isTracked = !MISSION_SKIP.has(e.tool)
-      if (isTracked) {
-        const m = missionLabel(e.tool, input)
-        await update($, mission, list =>
-          missionCap([
-            ...list,
-            {
-              id: e.tool_use_id,
-              parent: list.some(n => n.id === id) ? id : 'main',
-              kind: 'tool',
-              ...m,
-              status: 'running',
-              start: began,
-            },
-          ]),
-        )
-      }
       const ran = await next(e)
       const at = await $.clock.now()
       const failed = ran.deny !== undefined || ran.isError === true
-      if (isTracked) await missionEnd($, e.tool_use_id, failed, at)
       await update($, tools, log =>
         addCall(log, {
           tool: e.tool,
@@ -1775,23 +1718,11 @@ export const register: Register = (on, options) => {
       startedAt: await $.clock.now(),
     }
     await update($, run, r => ({ ...r, steps: [...r.steps, step].slice(-200) }))
-    const isTracked = !MISSION_SKIP.has(e.tool)
-    if (isTracked) {
-      await missionAdd($, {
-        id: step.id,
-        parent: 'main',
-        kind: 'tool',
-        ...missionLabel(e.tool, e as unknown as Record<string, unknown>),
-        status: 'running',
-        start: step.startedAt,
-      })
-    }
 
     const ran = await next(e)
 
     const endedAt = await $.clock.now()
     const ok = ran.deny === undefined && ran.isError !== true
-    if (isTracked) await missionEnd($, step.id, !ok, endedAt)
     const error = ok ? undefined : errorLine(ran)
     const cost = (await $.session.usage()).cost?.usd
     const ms = endedAt - step.startedAt
@@ -1840,7 +1771,6 @@ export const register: Register = (on, options) => {
           }
         }),
       )
-      await update($, mission, all => missionClose(all, id, failed, at))
       const one = list.find(a => a.id === id)
       if (one) {
         $.ui.toast(
@@ -1873,9 +1803,6 @@ export const register: Register = (on, options) => {
               s.endedAt === undefined ? { ...s, endedAt, ok: false } : s,
             ),
           },
-    )
-    await update($, mission, list =>
-      missionClose(list, 'main', e.reason === 'error' || e.reason === 'aborted', endedAt),
     )
     await update($, now, () => endedAt)
     await addWorked($, endedAt - e.durationMs, endedAt).catch(() => {})
@@ -2413,40 +2340,6 @@ export const register: Register = (on, options) => {
         </Box>
       )
 
-    // mission-control's who view: main, its subagents and their tool calls as one tree, newest at the bottom.
-    const tree = await read($, mission)
-    const ms = missionSummary(tree)
-    const missionView = (
-      <Box flexDirection="column">
-        <Text dimColor>
-          {`${ms.agents} agents (${ms.running} running) · ${ms.tools} tool calls${ms.failed ? ` · ${ms.failed} failed` : ''}`}
-        </Text>
-        {tree.length === 0 && <Text dimColor>Nothing yet. Start a task and watch it fill in.</Text>}
-        {missionLines(tree, t)
-          .slice(-MISSION_ROWS)
-          .map(l => (
-            <Text key={`mission-${l.node.id}`} wrap="truncate-end">
-              <Text dimColor>{l.prefix}</Text>
-              <Text
-                color={
-                  l.status === 'running'
-                    ? 'suggestion'
-                    : l.status === 'failed'
-                      ? 'error'
-                      : l.node.kind === 'tool'
-                        ? undefined
-                        : 'success'
-                }
-                weight={l.node.kind === 'tool' ? 'regular' : 'semibold'}
-                dimColor={l.status === 'done' && l.node.kind === 'tool'}
-              >
-                {l.text}
-              </Text>
-            </Text>
-          ))}
-      </Box>
-    )
-
     // One group of sections at a time, picked from the tab row; Activity's tab counts the running rows.
     // filetree is another plugin's pane: its tab brings that pane forward instead of picking a group.
     const shown = await read($, tab)
@@ -2454,7 +2347,6 @@ export const register: Register = (on, options) => {
       { id: 'usage', label: 'Usage' },
       { id: 'filetree', label: 'filetree' },
       { id: 'turn', label: 'Turn' },
-      { id: 'mission', label: 'Mission' },
       { id: 'activity', label: runningRows ? `Activity ${runningRows}` : 'Activity' },
     ]
     const openFiletree = () =>
@@ -2476,7 +2368,6 @@ export const register: Register = (on, options) => {
     if (shown !== 'turn') {
       const body = {
         usage: [usage, spendView, todayView, contextView, cacheView],
-        mission: [missionView],
         activity:
           toolsView || agentsView
             ? [toolsView, agentsView]
