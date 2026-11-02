@@ -565,8 +565,9 @@ test('the bottom bar follows the task list, and sweeps while a turn has none', a
   const state: State = { t: 1_000, usd: 0, aborted: [] }
   const clock = engine(on, state)
   on('tool.call', () => ({ result: {} }))
+  // The terminal draws the bar as text; surfaces with `Svg` draw the row below.
   const bar = async () => {
-    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     // Lit and dim cells are all `█`: the runs, in order, show where the lit block is.
     const text = (await ui.findAll({ type: 'Text', text: /^█+$/ })).map((n: any) => n.text).join('|')
     const label = (await ui.find({ type: 'Text', text: /^ (\d+ steps|\d+\/\d+ · \d+%)$/ }))?.text
@@ -589,6 +590,39 @@ test('the bottom bar follows the task list, and sweeps while a turn has none', a
   expect((await bar()).label).toBe(' 2/4 · 50%')
   await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'x', status: 'completed' }, { content: 'y', status: 'in_progress' }] } as any)
   expect((await bar()).label).toBe(' 1/2 · 75%')
+})
+
+test('the desktop draws the bottom bar as one Svg: open task, Tasks d/n and percent', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] }
+  engine(on, state)
+  on('tool.call', () => ({ result: {} }))
+  const row = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const svg = (await ui.findAll({ type: 'Svg' })) as any[]
+    const text = await ui.findAll({ type: 'Text', text: /^ (\d+ steps|\d+\/\d+ · \d+%)$/ })
+    await ui.unmount()
+    return { alt: svg.map(n => n.props.alt), source: String(svg[0]?.props.source ?? ''), text: text.length }
+  }
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect((await row()).alt).toEqual([])
+  await $.turn.start({ text: 'work', turnId: 'turn-s' })
+  expect((await row()).alt).toEqual(['work: 0 steps, 0%'])
+
+  const items = ['a', 'b', 'c', 'd'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items } as any)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true } as any)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', done: [2] } as any)
+  // With no open task the title falls back to the prompt.
+  expect((await row()).alt).toEqual(['work: Tasks 2/4, 50%'])
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', start: 3 } as any)
+  const r = await row()
+  expect(r.alt).toEqual(['c: Tasks 2/4, 50%'])
+  expect(r.source).toContain('class="run"')
+  expect(r.text).toBe(0)
+
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'turn-s', reason: 'answer' })
+  expect((await row()).source).not.toContain('class="run"')
 })
 
 const ymd = (ms: number) => {
@@ -1134,7 +1168,7 @@ test('a task made after a deleted one gets a fresh id, and an unfinished list ca
   engine(on, state)
   on('tool.call', () => ({ result: {} }))
   const label = async () => {
-    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const text = (await ui.find({ type: 'Text', text: /^ \d+\/\d+ · \d+%$/ }))?.text
     await ui.unmount()
     return text

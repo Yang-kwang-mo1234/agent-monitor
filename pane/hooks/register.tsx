@@ -23,6 +23,7 @@ import type {
   Step,
   Today,
 } from '../types'
+import { BAR_H, barSvg, barView } from './bar'
 import {
   GLYPH,
   HISTORY,
@@ -2137,6 +2138,10 @@ export const register: Register = (on, options) => {
     const rel = await read($, release)
     // The agent's progress at the bottom left; hidden before the first turn.
     const bottom = r.status === 'idle' ? undefined : progress(r, t, Math.max(6, Math.min(16, width - 34)))
+    // Where `Svg` draws, a savvy-progress style row takes the bar's place, on a line of its own.
+    const ui = $.ui.resolve(e)
+    const band = r.status !== 'idle' && e.surface !== 'terminal' && 'Svg' in ui ? barView(r, oneLine(r.prompt, 80)) : undefined
+    const barWidth = Math.max(180, Math.min(1600, (e.props.bodyColumns ?? 40) * 8 - 16))
     // Button takes no disabled state: with nothing to pull, a dim label stands in.
     const updateView = (
       <Box flexDirection="column">
@@ -2150,8 +2155,16 @@ export const register: Register = (on, options) => {
             <Text color="error">{`Update failed${su.message ? `: ${su.message}` : ''}`}</Text>
           </Box>
         )}
+        {band && 'Svg' in ui && (
+          <ui.Svg
+            source={barSvg(r, band, barWidth)}
+            alt={`${band.title}: ${band.label}, ${band.percent}`}
+            width={barWidth}
+            height={BAR_H}
+          />
+        )}
         <Box flexDirection="row" justifyContent="space-between" gap={1}>
-          {bottom ? (
+          {bottom && !band ? (
             <Text mono>
               <Text dimColor>{bottom.lead}</Text>
               <Text color={status.color}>{bottom.on}</Text>
