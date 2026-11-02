@@ -1872,6 +1872,16 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The filetree tab runs `/filetree open`; its echo in the transcript is drawn as nothing.
+  // A command queued with no stamp arrives as `unclassified`, so that origin counts too.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const o = e.props.origin
+    const isOurs = (o.kind === 'plugin' && o.name === 'agent-monitor-pane') || o.kind === 'unclassified'
+    if (!isOurs || e.props.text.trim() !== '/filetree open') return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const r = await read($, run)

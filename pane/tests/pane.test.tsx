@@ -249,6 +249,26 @@ test('the tabs run Usage, filetree, Turn, Activity, and filetree opens its own p
   await ui.unmount()
 })
 
+test("the filetree tab's /filetree open echo draws nothing; the person's own prompt still shows", async ($, on) => {
+  engine(on, { t: 1_000, usd: 0, aborted: [] as string[] })
+  on('ui.render', { component: 'UserMessage' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const row = async (origin: object) => {
+    const ui = await $.ui.mount({
+      plugin: 'agent-monitor-pane',
+      surface: 'desktop',
+      component: 'UserMessage',
+      requestId: 'm1',
+      props: { text: '/filetree open', origin, isExpanded: false },
+    } as any)
+    const shown = (await ui.findAll({ type: 'Text' })).map(n => n.text)
+    await ui.unmount()
+    return shown
+  }
+  expect(await row({ kind: 'plugin', name: 'agent-monitor-pane' })).toEqual([])
+  expect(await row({ kind: 'composer' })).toEqual(['engine row'])
+})
+
 const measureContext = (state: State, percent: number) => {
   state.pct = percent
   return measureOnly(percent)
