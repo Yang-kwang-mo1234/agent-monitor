@@ -222,8 +222,8 @@ export type ToolLog = {
   failures: ToolFailure[]
 }
 
-// The pane's tab shown: the turn, usage and spend, context, or tools and subagents.
-export type PaneTab = 'turn' | 'usage' | 'context' | 'activity'
+// The pane's tab shown: usage, spend and context, the turn, or tools and subagents.
+export type PaneTab = 'usage' | 'turn' | 'activity'
 
 declare module 'claude-code' {
   interface PluginState {

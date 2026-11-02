@@ -159,7 +159,7 @@ const selected = atom(
 const tab = atom(
   { plugin: 'agent-monitor-pane', key: 'tab' } as const,
   'turn' as PaneTab,
-  { shape: 'tab-1' },
+  { shape: 'tab-2' },
 )
 
 // How the session is billed, read once at session start.
@@ -2331,20 +2331,23 @@ export const register: Register = (on, options) => {
       )
 
     // One group of sections at a time, picked from the tab row; Activity's tab counts the running rows.
+    // filetree is another plugin's pane: its tab brings that pane forward instead of picking a group.
     const shown = await read($, tab)
-    const tabs: { id: PaneTab; label: string }[] = [
-      { id: 'turn', label: 'Turn' },
+    const tabs: { id: PaneTab | 'filetree'; label: string }[] = [
       { id: 'usage', label: 'Usage' },
-      { id: 'context', label: 'Context' },
+      { id: 'filetree', label: 'filetree' },
+      { id: 'turn', label: 'Turn' },
       { id: 'activity', label: runningRows ? `Activity ${runningRows}` : 'Activity' },
     ]
+    const openFiletree = () =>
+      void $.command.run({ command: 'filetree', args: 'open' }).catch(() => $.ui.toast('filetree is not installed.'))
     const tabRow = (
       <Box flexDirection="row" flexWrap="wrap" gap={1}>
         {tabs.map(x => (
           <Button
             key={`tab-${x.id}`}
             variant={x.id === shown ? 'primary' : 'secondary'}
-            onPress={() => void update($, tab, () => x.id)}
+            onPress={x.id === 'filetree' ? openFiletree : () => void update($, tab, () => x.id as PaneTab)}
           >
             {x.label}
           </Button>
@@ -2354,8 +2357,7 @@ export const register: Register = (on, options) => {
 
     if (shown !== 'turn') {
       const body = {
-        usage: [usage, spendView, todayView],
-        context: [contextView, cacheView],
+        usage: [usage, spendView, todayView, contextView, cacheView],
         activity:
           toolsView || agentsView
             ? [toolsView, agentsView]

@@ -191,7 +191,7 @@ test('the 5-hour and weekly windows show their pace and reset times', async ($, 
   await ui.unmount()
 })
 
-test('The pane opens on Turn, and each tab shows only its own sections', async ($, on) => {
+test('The pane opens on Turn, and each tab shows only its own sections, Usage holding Context', async ($, on) => {
   const state: State = { t: Date.parse('2026-10-31T10:00:00Z'), usd: 0, aborted: [] as string[] }
   engine(on, state)
   on('session.measure', (_: unknown, e: any) => ({ changed: e.changed }))
@@ -217,9 +217,7 @@ test('The pane opens on Turn, and each tab shows only its own sections', async (
 
   expect(await shown()).toEqual(['Claude Opus 5.5'])
   await showTab($, 'usage')
-  expect(await shown()).toEqual(['5-hour', 'Spend', 'Worked today'])
-  await showTab($, 'context')
-  expect(await shown()).toEqual(['Context', 'Prompt cache'])
+  expect(await shown()).toEqual(['5-hour', 'Spend', 'Worked today', 'Context', 'Prompt cache'])
   await showTab($, 'activity')
   expect(await shown()).toEqual(['No tool calls or subagents yet.'])
 
@@ -228,6 +226,24 @@ test('The pane opens on Turn, and each tab shows only its own sections', async (
   expect(await shown()).toEqual(['Tools'])
   await showTab($, 'turn')
   expect(await shown()).toEqual(['Claude Opus 5.5'])
+})
+
+test('the tabs run Usage, filetree, Turn, Activity, and filetree opens its own pane', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] as string[] }
+  engine(on, state)
+  const runs: string[] = []
+  on('command.run', { command: 'filetree' }, (_: unknown, e: any) => {
+    runs.push(e.args)
+    return {}
+  })
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const keys = (await ui.findAll({ type: 'Button', text: /^(Usage|filetree|Turn|Activity)$/ })).map(n => n.text)
+  expect(keys).toEqual(['Usage', 'filetree', 'Turn', 'Activity'])
+  await ui.press({ plugin: 'agent-monitor-pane', key: 'tab-filetree' })
+  expect(runs).toEqual(['open'])
+  await ui.unmount()
 })
 
 const measureContext = (state: State, percent: number) => {
@@ -252,7 +268,7 @@ test('context at 80% sends one handoff prompt, and re-arms after it drops', asyn
   on('ui.toast', () => ({ value: undefined }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await showTab($, 'context')
+  await showTab($, 'usage')
   await $.session.measure(measureContext(state, 62))
   expect(prompts.length).toBe(0)
 
@@ -294,7 +310,7 @@ test('the Handoff button sends the prompt; Auto off stops the automatic one', as
   })
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await showTab($, 'context')
+  await showTab($, 'usage')
   await $.session.measure(measureContext(state, 40))
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
