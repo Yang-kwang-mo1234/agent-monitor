@@ -231,7 +231,7 @@ test('The pane opens on Usage, and each tab shows only its own sections, Usage h
   expect(await shown()).toEqual(['Claude Opus 5.5'])
 })
 
-test('the tabs run Usage, filetree, Turn, Activity, and filetree opens its own pane', async ($, on) => {
+test('the tabs run Usage, filetree, Turn, Mission, Activity, and filetree opens its own pane', async ($, on) => {
   const state: State = { t: 1_000, usd: 0, aborted: [] as string[] }
   engine(on, state)
   const runs: string[] = []
@@ -242,10 +242,37 @@ test('the tabs run Usage, filetree, Turn, Activity, and filetree opens its own p
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const keys = (await ui.findAll({ type: 'Button', text: /^(Usage|filetree|Turn|Activity)$/ })).map(n => n.text)
-  expect(keys).toEqual(['Usage', 'filetree', 'Turn', 'Activity'])
+  const keys = (await ui.findAll({ type: 'Button', text: /^(Usage|filetree|Turn|Mission|Activity)$/ })).map(n => n.text)
+  expect(keys).toEqual(['Usage', 'filetree', 'Turn', 'Mission', 'Activity'])
   await ui.press({ plugin: 'agent-monitor-pane', key: 'tab-filetree' })
   expect(runs).toEqual(['open'])
+  await ui.unmount()
+})
+
+test('Mission nests a subagent under main and folds runs of one tool family', async ($, on) => {
+  const state: State = { t: 1_000, usd: 0, aborted: [] as string[] }
+  engine(on, state)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'a1' }))
+  on('tool.call', (_: unknown, e: any) => (e.command === 'npm test' ? { result: {}, isError: true } : { result: {} }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await showTab($, 'mission')
+  await $.turn.start({ text: 'look around', turnId: 'turn-m' })
+  await $.tool.call({ tool: 'Read', file_path: '/repo/src/a.ts', tool_use_id: 'r1' } as any)
+  await $.tool.call({ tool: 'Read', file_path: '/repo/src/b.ts', tool_use_id: 'r2' } as any)
+  await $.tool.call({ tool: 'TaskCreate', subject: 'x', tool_use_id: 't1' } as any)
+  await $.agent.spawn(spawn('a1', { description: 'Find callers' }))
+  await $.tool.call({ tool: 'Grep', pattern: 'describe(', agentId: 'a1', tool_use_id: 'g1' } as any)
+  await $.tool.call({ tool: 'Bash', command: 'npm test', description: 'Running tests', tool_use_id: 'b1' } as any)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^1 agents/ }))?.text).toBe('1 agents (1 running) · 4 tool calls · 1 failed')
+  expect((await ui.find({ type: 'Text', text: /^◆ main · look around/ }))).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^◉ read: src\/a\.ts → src\/b\.ts {2}×2$/ }))).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^● Find callers .* · 1 tools$/ }))).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^⌕ search: describe\($/ }))).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^│ {2}└─ $/ }))).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /TaskCreate|taskcreate/ })).toBeFalsy()
   await ui.unmount()
 })
 

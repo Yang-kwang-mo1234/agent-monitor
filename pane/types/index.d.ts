@@ -222,8 +222,20 @@ export type ToolLog = {
   failures: ToolFailure[]
 }
 
-// The pane's tab shown: usage, spend and context, the turn, or tools and subagents.
-export type PaneTab = 'usage' | 'turn' | 'activity'
+// mission-control: one box in the Mission tree, the main loop, a subagent or one tool call.
+export type MissionNode = {
+  id: string
+  parent: string | null
+  kind: 'main' | 'agent' | 'tool'
+  label: string
+  family: string // for tools: 'bash', 'edit', 'read', 'browser', 'mcp:<server>', ...
+  status: 'running' | 'done' | 'failed'
+  start: number
+  end?: number
+}
+
+// The pane's tab shown: usage, spend and context, the turn, the mission tree, or tools and subagents.
+export type PaneTab = 'usage' | 'turn' | 'mission' | 'activity'
 
 declare module 'claude-code' {
   interface PluginState {
@@ -249,6 +261,7 @@ declare module 'claude-code' {
       billing: Shaped<Billing>
       budget: Shaped<Budget>
       tools: Shaped<ToolLog>
+      mission: Shaped<MissionNode[]>
     }
   }
 }
