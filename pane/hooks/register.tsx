@@ -1365,7 +1365,6 @@ export const register: Register = (on, options) => {
       name: 'agent-monitor',
       description: 'Open the Agent Monitor pane if it is closed',
     })
-    void $.ui.open({ id: PANE, title: TITLE })
     const usage = await $.session.usage()
     await update($, limits, () => toLimits(usage.rateLimits))
     const known = await $.store.get('ttl').catch(() => undefined)
